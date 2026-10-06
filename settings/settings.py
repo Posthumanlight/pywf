@@ -1,22 +1,30 @@
 from pathlib import Path
-
-from pydantic_settings import BaseSettings
-from pathlib import Path
-from dotenv import load_dotenv
 from typing import ClassVar
+
+from dotenv import load_dotenv
+from pydantic_settings import BaseSettings
 
 load_dotenv(Path(__file__).parents[1] / ".env")
 
+
 class Settings(BaseSettings):
-    BASE_PATH : ClassVar[Path]= Path(__file__).resolve().parents[1]
+    BASE_PATH: ClassVar[Path] = Path(__file__).resolve().parents[1]
     gemini_api_key: str
-    character_id: str
+    character_ids: str
+    model_fallbacks: str = ""
+
+    @property
+    def party(self) -> tuple[str, ...]:
+        return tuple(part.strip() for part in self.character_ids.split(",") if part.strip())
+
+    @property
+    def fallbacks(self) -> tuple[str, ...]:
+        return tuple(part.strip() for part in self.model_fallbacks.split(",") if part.strip())
 
     class Config:
         env_file = Path(__file__).parents[1] / ".env"
         env_file_encoding = "utf-8"
         case_sensitive = False
 
+
 settings = Settings()
-
-

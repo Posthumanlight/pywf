@@ -421,8 +421,11 @@ When speaking out of character, always mark it explicitly with:
 '''
 
 
-def build_player_system_prompt(character_id: str) -> str:
-    return _BASE_PLAYER_SYSTEM_PROMPT + (
+def build_player_system_prompt(
+    character_id: str,
+    party_member_names: list[str] | None = None,
+) -> str:
+    prompt = _BASE_PLAYER_SYSTEM_PROMPT + (
         "\n\n============================================================\n"
         "YOUR CHARACTER\n"
         "============================================================\n"
@@ -431,3 +434,14 @@ def build_player_system_prompt(character_id: str) -> str:
         "to read your current sheet (HP, resources, spells, inventory, conditions). "
         "Re-read it whenever your sheet may have changed.\n"
     )
+    if party_member_names:
+        roster = ", ".join(party_member_names)
+        prompt += (
+            "\n============================================================\n"
+            "YOUR PARTY\n"
+            "============================================================\n"
+            f"You are adventuring with: {roster}.\n"
+            "Treat them as fellow player characters at the table. Interact with them in character, "
+            "defer to their agency, and never narrate their actions, dialogue, or thoughts.\n"
+        )
+    return prompt

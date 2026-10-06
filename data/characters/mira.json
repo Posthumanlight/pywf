@@ -1,0 +1,69 @@
+{
+    "id": "mira",
+    "name": "Mira Thistlewood",
+    "species": "Half-Elf",
+    "background": "Acolyte",
+    "alignment": "Neutral Good",
+    "origin_feat": "Magic Initiate (Cleric)",
+    "armor_class": 16,
+    "current_hp": 10,
+    "max_hp": 10,
+    "temporary_hp": 0,
+    "speed_ft": 30,
+    "initiative_bonus": 2,
+    "proficiency_bonus": 2,
+    "notes": "Quietly devout; keeps a bronze sun pendant from her former temple. Softer voice than her resolve.",
+    "classes": [
+        {"class": "Cleric", "level": 1, "subclass": "Life Domain"}
+    ],
+    "abilities": {
+        "str": 10,
+        "dex": 14,
+        "con": 13,
+        "int": 11,
+        "wis": 16,
+        "cha": 14
+    },
+    "feats": [
+        {"name": "Magic Initiate (Cleric)", "source": "origin"}
+    ],
+    "saving_throw_proficiencies": ["wis", "cha"],
+    "skill_proficiencies": ["insight", "medicine", "religion", "persuasion"],
+    "languages": ["Common", "Elvish", "Celestial"],
+    "senses": {
+        "darkvision_ft": 60,
+        "passive_perception": 13
+    },
+    "equipment": [
+        {"name": "Chain shirt", "qty": 1},
+        {"name": "Shield", "qty": 1},
+        {"name": "Mace", "qty": 1},
+        {"name": "Holy symbol (sun pendant)", "qty": 1},
+        {"name": "Priest's pack", "qty": 1},
+        {"name": "Prayer book", "qty": 1}
+    ],
+    "features": [
+        {"name": "Spellcasting", "class": "Cleric"},
+        {"name": "Divine Domain: Life", "class": "Cleric"},
+        {"name": "Disciple of Life", "class": "Cleric"},
+        {"name": "Darkvision", "species": "Half-Elf"},
+        {"name": "Fey Ancestry", "species": "Half-Elf"}
+    ],
+    "spells": [
+        {"name": "Light", "level": 0},
+        {"name": "Sacred Flame", "level": 0},
+        {"name": "Spare the Dying", "level": 0},
+        {"name": "Bless", "level": 1, "prepared": true},
+        {"name": "Cure Wounds", "level": 1, "prepared": true, "always_prepared": "domain"},
+        {"name": "Guiding Bolt", "level": 1, "prepared": true},
+        {"name": "Healing Word", "level": 1, "prepared": true}
+    ],
+    "spell_slots": {
+        "1": 2
+    },
+    "resources": {
+        "hit_dice": {"d8": 1},
+        "channel_divinity": {"remaining": 1, "max": 1, "recharge": "short rest"}
+    },
+    "conditions": []
+}
