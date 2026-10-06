@@ -1,0 +1,57 @@
+{
+    "id": "thorin",
+    "name": "Thorin Ironvein",
+    "species": "Dwarf (Mountain)",
+    "background": "Soldier",
+    "alignment": "Lawful Good",
+    "origin_feat": "Savage Attacker",
+    "armor_class": 18,
+    "current_hp": 12,
+    "max_hp": 12,
+    "temporary_hp": 0,
+    "speed_ft": 25,
+    "initiative_bonus": 1,
+    "proficiency_bonus": 2,
+    "notes": "Grizzled dwarven veteran; speaks plainly; keeps a copper token from a lost comrade.",
+    "classes": [
+        {"class": "Fighter", "level": 1, "subclass": null}
+    ],
+    "abilities": {
+        "str": 16,
+        "dex": 12,
+        "con": 15,
+        "int": 10,
+        "wis": 13,
+        "cha": 8
+    },
+    "feats": [
+        {"name": "Savage Attacker", "source": "origin"}
+    ],
+    "saving_throw_proficiencies": ["str", "con"],
+    "skill_proficiencies": ["athletics", "intimidation", "perception"],
+    "languages": ["Common", "Dwarvish"],
+    "senses": {
+        "darkvision_ft": 60,
+        "passive_perception": 13
+    },
+    "equipment": [
+        {"name": "Chain mail", "qty": 1},
+        {"name": "Shield", "qty": 1},
+        {"name": "Warhammer", "qty": 1},
+        {"name": "Handaxe", "qty": 2},
+        {"name": "Explorer's pack", "qty": 1},
+        {"name": "Copper token", "qty": 1}
+    ],
+    "features": [
+        {"name": "Second Wind", "class": "Fighter", "uses_remaining": 2, "uses_max": 2, "recharge": "short rest"},
+        {"name": "Fighting Style: Defense", "class": "Fighter"},
+        {"name": "Darkvision", "species": "Dwarf"},
+        {"name": "Dwarven Resilience", "species": "Dwarf"}
+    ],
+    "spells": [],
+    "spell_slots": {},
+    "resources": {
+        "hit_dice": {"d10": 1}
+    },
+    "conditions": []
+}

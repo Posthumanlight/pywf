@@ -3,7 +3,7 @@ from typing import Literal
 from langchain.tools import tool
 
 @tool
-def roll_dice(count, d, mode:Literal["normal", "advantage", "disadvantage"] = "normal") -> str:
+def roll_dice(count: int, d: int, mode: Literal["normal", "advantage", "disadvantage"] = "normal") -> str:
     '''Roll dice for the character. Call ONLY when the DM has asked for a roll
     or the table convention allows it. Never state a roll result yourself;
     results come only from this tool.

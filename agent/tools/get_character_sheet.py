@@ -15,7 +15,7 @@ def get_character_sheet(character_id: str) -> str:
         return json.dumps(
             {
                 "error": f"Character '{character_id}' not found.",
-                "available_ids": char_db.list_ids,
+                "available_ids": char_db.list_ids(),
             },
             ensure_ascii=False,
         )
