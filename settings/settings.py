@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings
@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     gemini_api_key: str
     character_ids: str
     model_fallbacks: str = ""
+    interface: Literal["cli", "api"] = "cli"
+    api_host: str = "127.0.0.1"
+    api_port: int = 8000
 
     @property
     def party(self) -> tuple[str, ...]:

@@ -17,7 +17,7 @@ def build_player_agent(
     if model_fallbacks:
         middleware.append(ModelFallbackMiddleware(model_fallbacks[0], *model_fallbacks[1:]))
     return create_agent(
-        model="google_genai:gemini-3.5-flash-lite",
+        model="google_genai:gemini-3.7-flash",
         tools=[rules_srd_retriever, roll_dice, get_character_sheet],
         system_prompt=build_player_system_prompt(character_id, party_member_names),
         checkpointer=checkpointer,

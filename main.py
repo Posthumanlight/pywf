@@ -1,18 +1,20 @@
-"""pywf CLI: a human DM converses with a party of AI player agents."""
-import json
-import random
-
-from langchain_core.runnables import RunnableConfig
+"""pywf entry point: dispatches to CLI REPL or FastAPI server based on settings."""
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from agent.core.agent import build_player_agent
-from db.characters import CharacterRepository
 from db.core import DB_PATH
+from engine.core import (
+    MissingCharactersError,
+    PartyContext,
+    UnknownTargetError,
+    build_party,
+    parse_dm_line,
+    run_round,
+)
 from settings.settings import settings
 
 
-def _print_banner(party_ids: list[str], names: dict[str, str]) -> None:
-    roster = ", ".join(f"{names[cid]} (@{cid})" for cid in party_ids)
+def _print_banner(ctx: PartyContext) -> None:
+    roster = ", ".join(f"{ctx.names[cid]} (@{cid})" for cid in ctx.party_ids)
     print(f"pywf — party: {roster}")
     print("Type DM narration / direct address. Mark your OOC lines with [OOC: ...].")
     print("Prefix with @<id> to speak to one party member (e.g. '@thorin ...').")
@@ -20,72 +22,20 @@ def _print_banner(party_ids: list[str], names: dict[str, str]) -> None:
     print()
 
 
-def _render_response(result: dict) -> str:
-    messages = result.get("messages", [])
-    for msg in reversed(messages):
-        content = getattr(msg, "content", None)
-        if content and getattr(msg, "type", None) == "ai":
-            if isinstance(content, str):
-                return content
-            parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
-            return "".join(parts).strip() or str(content)
-    return "(no response)"
-
-
-def _assemble_turn_input(
-    dm_text: str,
-    prior_turns: list[tuple[str, str]],
-    speaker_name: str,
-) -> str:
-    lines: list[str] = []
-    if dm_text:
-        lines.append(f"DM: {dm_text}")
-    if prior_turns:
-        lines.append("")
-        lines.append("Earlier this round:")
-        for name, text in prior_turns:
-            lines.append(f"- {name} said: {text}")
-    lines.append("")
-    lines.append(f"Your turn, {speaker_name}. Respond in character.")
-    return "\n".join(lines)
-
-
-def main() -> int:
-    party_ids = list(settings.party)
-    if not party_ids:
-        print("No character_ids configured. Set character_ids=<id1>,<id2>,... in .env")
-        return 1
-
-    repo = CharacterRepository()
-    available = set(repo.list_ids())
-    missing = [cid for cid in party_ids if cid not in available]
-    if missing:
-        print(f"Missing character(s) in DB: {missing}")
-        print(f"Available ids: {sorted(available)}")
-        print("Seed one with: poetry run python scripts/seed_character.py <path-to-json>")
-        return 1
-
-    names: dict[str, str] = {}
-    for cid in party_ids:
-        raw = repo.get_characters_json(cid)
-        assert raw is not None, f"preflight passed but {cid} vanished"
-        sheet = json.loads(raw)
-        names[cid] = sheet.get("name") or cid
-
-    fallbacks = list(settings.fallbacks)
-
+def run_cli() -> int:
     with SqliteSaver.from_conn_string(str(DB_PATH)) as saver:
-        agents = {}
-        for cid in party_ids:
-            peers = [names[other] for other in party_ids if other != cid]
-            agents[cid] = build_player_agent(
-                cid,
-                party_member_names=peers,
-                checkpointer=saver,
-                model_fallbacks=fallbacks,
-            )
+        try:
+            ctx = build_party(saver)
+        except MissingCharactersError as exc:
+            print(exc)
+            print(f"Available ids: {exc.available}")
+            print("Seed one with: poetry run python scripts/seed_character.py <path-to-json>")
+            return 1
+        except ValueError as exc:
+            print(exc)
+            return 1
 
-        _print_banner(party_ids, names)
+        _print_banner(ctx)
 
         while True:
             try:
@@ -100,31 +50,29 @@ def main() -> int:
             if prompt.lower() in ("/exit", "/quit"):
                 return 0
 
-            if prompt.startswith("@"):
-                head, _, body = prompt.partition(" ")
-                target = head[1:]
-                if target not in agents:
-                    print(f"unknown party member: {target!r}; party: {party_ids}")
-                    continue
-                order = [target]
-                dm_text = body.strip()
-            else:
-                order = random.sample(party_ids, len(party_ids))
-                dm_text = prompt
+            try:
+                parsed = parse_dm_line(prompt, ctx.party_ids)
+            except UnknownTargetError as exc:
+                print(exc)
+                continue
 
-            prior: list[tuple[str, str]] = []
-            for cid in order:
-                agent_input = _assemble_turn_input(dm_text, prior, speaker_name=names[cid])
-                config: RunnableConfig = {"configurable": {"thread_id": cid}}
-                result = agents[cid].invoke(
-                    {"messages": [{"role": "user", "content": agent_input}]},
-                    config=config,
-                )
-                reply = _render_response(result)
+            for turn in run_round(ctx, parsed.dm_text, parsed.order):
                 print()
-                print(f"{names[cid]}> {reply}")
+                print(f"{turn['name']}> {turn['text']}")
                 print()
-                prior.append((names[cid], reply))
+
+
+def run_api() -> int:
+    import uvicorn
+
+    uvicorn.run("api.app:app", host=settings.api_host, port=settings.api_port)
+    return 0
+
+
+def main() -> int:
+    if settings.interface == "api":
+        return run_api()
+    return run_cli()
 
 
 if __name__ == "__main__":
