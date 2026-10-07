@@ -147,7 +147,7 @@ def main() -> int:
         assert ":list=\"'srd-subclass-' + (c.class || '')\"" in body
         print("ok  inputs reference the datalists (incl. dynamic subclass binding)")
 
-        assert 'x-data="spellPicker(s)"' in body
+        assert 'x-data="spellPicker(s' in body  # loose match: new signature takes a callback
         assert 'x-model.number="levelFilter"' in body
         assert "window.spellPicker" in body
         print("ok  spell picker widget + Alpine helper present")

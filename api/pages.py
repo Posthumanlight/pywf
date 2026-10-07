@@ -13,6 +13,7 @@ _HEAD = """<meta charset="utf-8">
 <title>pywf</title>
 <script defer src="https://unpkg.com/alpinejs@3.14.1/dist/cdn.min.js"></script>
 <script src="https://unpkg.com/htmx.org@2.0.3"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked"></script>
 <style>
  body { font: 14px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; max-width: 960px; margin: 2em auto; padding: 0 1em; color: #111; }
  h1 { font-size: 1.15em; margin: 0 0 .75em 0; }
@@ -52,6 +53,46 @@ _HEAD = """<meta charset="utf-8">
  .suggest li { padding: .25em .5em; cursor: pointer; }
  .suggest li:hover { background: #eef; }
  .suggest li.empty { color: #999; font-style: italic; cursor: default; }
+ .srd-head { margin-bottom: .4em; }
+ .srd-head .err { color: #a00; margin-left: .5em; }
+ .srd-head .loading { color: #888; margin-left: .5em; }
+ .srd-body { background: #fafafa; border: 1px solid #ddd; padding: .75em 1em; margin: 0; }
+ .srd-body h1, .srd-body h2, .srd-body h3, .srd-body h4 { margin: .8em 0 .3em 0; line-height: 1.2; }
+ .srd-body h1 { font-size: 1.3em; border-bottom: 1px solid #ccc; padding-bottom: .15em; }
+ .srd-body h2 { font-size: 1.15em; }
+ .srd-body h3 { font-size: 1.05em; }
+ .srd-body h4 { font-size: 1em; color: #333; }
+ .srd-body p { margin: .4em 0; }
+ .srd-body ul, .srd-body ol { margin: .4em 0; padding-left: 1.5em; }
+ .srd-body li { margin: .15em 0; }
+ .srd-body code { background: #eee; padding: 0 .25em; border-radius: 3px; font-size: 0.95em; }
+ .srd-body pre { background: #eee; padding: .5em; overflow-x: auto; }
+ .srd-body table { border-collapse: collapse; width: 100%; margin: .5em 0; font-size: .95em; }
+ .srd-body th, .srd-body td { border: 1px solid #ddd; padding: .3em .5em; text-align: left; }
+ .srd-body th { background: #f0f0f0; }
+ .srd-body hr { border: 0; border-top: 1px solid #ddd; margin: .8em 0; }
+ .srd-body blockquote { border-left: 3px solid #ccc; margin: .5em 0; padding: .2em .8em; color: #555; }
+
+ /* Character form two-column layout */
+ body:has(.form-page) { max-width: none; padding: 0 1em; }
+ .form-page { max-width: 1600px; margin: 0 auto; }
+ .form-grid { display: grid; grid-template-columns: minmax(0, 1fr) clamp(300px, 32vw, 520px); gap: 1.5em; align-items: start; }
+ .form-column { min-width: 0; }
+ .srd-column { position: sticky; top: 1em; max-height: calc(100vh - 2em); overflow-y: auto; }
+ .srd-column .srd-body { max-height: none; }
+
+ /* Mobile floating-action button + overlay */
+ .srd-fab { display: none; position: fixed; right: 1em; bottom: 1em; width: 48px; height: 48px; border-radius: 50%; background: #06c; color: #fff; border: none; font-size: 1.2em; cursor: pointer; z-index: 100; box-shadow: 0 2px 6px rgba(0,0,0,.25); align-items: center; justify-content: center; }
+ .srd-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 200; align-items: flex-end; justify-content: center; }
+ .srd-sheet { background: #fff; width: 100%; max-width: 720px; max-height: 85vh; overflow-y: auto; border-radius: 10px 10px 0 0; padding: 1em; }
+ .srd-close { float: right; background: none; border: none; font-size: 1.4em; cursor: pointer; line-height: 1; padding: 0 .3em; }
+
+ @media (max-width: 900px) {
+  .form-grid { grid-template-columns: 1fr; }
+  .srd-column { display: none; }
+  .srd-fab { display: flex; }
+  .srd-overlay { display: flex; }
+ }
 </style>"""
 
 
@@ -284,9 +325,12 @@ def character_form_page(mode: str, initial: dict[str, Any] | None = None) -> str
     mode_attr = html.escape(json.dumps(mode), quote=True)
     srd_block = _srd_datalists_html()
     body = f"""{_NAV}
-<h1>{'Edit character' if mode == 'edit' else 'New character'}</h1>
 {srd_block}
 <div x-data="characterForm({data_attr}, {mode_attr})" x-cloak>
+<div class="form-page">
+<h1>{'Edit character' if mode == 'edit' else 'New character'}</h1>
+<div class="form-grid">
+<div class="form-column">
  <template x-if="error">
   <div class="error" x-text="error"></div>
  </template>
@@ -295,7 +339,7 @@ def character_form_page(mode: str, initial: dict[str, Any] | None = None) -> str
   <div class="grid">
    <div><label>id (slug, lowercase)</label><input type="text" x-model="form.id" :readonly="mode === 'edit'"></div>
    <div><label>name</label><input type="text" x-model="form.name"></div>
-   <div><label>species</label><input type="text" x-model="form.species" list="srd-species"></div>
+   <div><label>species</label><input type="text" x-model="form.species" list="srd-species" @change="showSrd('species', form.species)"></div>
    <div><label>background</label><input type="text" x-model="form.background"></div>
    <div><label>alignment</label><input type="text" x-model="form.alignment"></div>
    <div><label>origin feat</label><input type="text" x-model="form.origin_feat"></div>
@@ -325,9 +369,9 @@ def character_form_page(mode: str, initial: dict[str, Any] | None = None) -> str
  <fieldset><legend>Classes</legend>
   <template x-for="(c, i) in form.classes" :key="i">
    <div class="row">
-    <input placeholder="class (e.g. Fighter)" x-model="c.class" list="srd-classes">
+    <input placeholder="class (e.g. Fighter)" x-model="c.class" list="srd-classes" @change="showSrd('class', c.class)">
     <input type="number" placeholder="level" x-model.number="c.level" style="max-width: 6em;">
-    <input placeholder="subclass (optional)" x-model="c.subclass" :list="'srd-subclass-' + (c.class || '')">
+    <input placeholder="subclass (optional)" x-model="c.subclass" :list="'srd-subclass-' + (c.class || '')" @change="showSrd('subclass', c.subclass)">
     <button type="button" class="btn-danger" @click="form.classes.splice(i, 1)">x</button>
    </div>
   </template>
@@ -337,7 +381,7 @@ def character_form_page(mode: str, initial: dict[str, Any] | None = None) -> str
  <fieldset><legend>Feats</legend>
   <template x-for="(f, i) in form.feats" :key="i">
    <div class="row">
-    <input placeholder="name" x-model="f.name" list="srd-feats">
+    <input placeholder="name" x-model="f.name" list="srd-feats" @change="showSrd('feat', f.name)">
     <input placeholder="source (e.g. origin)" x-model="f.source">
     <button type="button" class="btn-danger" @click="form.feats.splice(i, 1)">x</button>
    </div>
@@ -374,8 +418,8 @@ def character_form_page(mode: str, initial: dict[str, Any] | None = None) -> str
  <fieldset><legend>Spells</legend>
   <template x-for="(s, i) in form.spells" :key="i">
    <div class="row">
-    <div class="spell-picker" x-data="spellPicker(s)" @click.outside="open=false">
-     <input placeholder="name" x-model="s.name" @focus="open=true">
+    <div class="spell-picker" x-data="spellPicker(s, (name) => showSrd('spell', name))" @click.outside="open=false">
+     <input placeholder="name" x-model="s.name" @focus="open=true" @change="showSrd('spell', s.name)">
      <template x-if="open">
       <div class="suggest">
        <div class="row">
@@ -459,6 +503,29 @@ def character_form_page(mode: str, initial: dict[str, Any] | None = None) -> str
   <a href="/characters">Cancel</a>
  </div>
 </div>
+<aside class="srd-column">
+ <div class="srd-panel">
+  <div class="srd-head">
+   <strong x-text="srd.name || 'change a class, subclass, species, feat, or spell to see its rules here'"></strong>
+   <span class="loading" x-show="srd.loading"> · loading…</span>
+   <span class="err" x-show="srd.error" x-text="srd.error"></span>
+  </div>
+  <div class="srd-body" x-html="srd.html" x-show="srd.html"></div>
+ </div>
+</aside>
+</div>
+</div>
+<button class="srd-fab" @click="srdOpen = true" x-show="srd.name" title="Show rules">ⓘ</button>
+<div class="srd-overlay" x-show="srdOpen" @click.self="srdOpen = false">
+ <div class="srd-sheet">
+  <div class="srd-head">
+   <strong x-text="srd.name"></strong>
+   <button class="srd-close" @click="srdOpen = false" aria-label="Close">×</button>
+  </div>
+  <div class="srd-body" x-html="srd.html" x-show="srd.html"></div>
+ </div>
+</div>
+</div>
 
 <script>
 function characterForm(initial, mode) {{
@@ -467,6 +534,47 @@ function characterForm(initial, mode) {{
     form: initial,
     error: null,
     submitting: false,
+    srd: {{ category: '', name: '', body: '', html: '', loading: false, error: null }},
+    srdOpen: false,
+    _srdCache: {{}},
+    _renderMd(body) {{
+      return (body && window.marked) ? marked.parse(body) : (body || '');
+    }},
+    async showSrd(category, name) {{
+      name = (name || '').trim();
+      if (!name) {{
+        this.srd.category = ''; this.srd.name = ''; this.srd.body = ''; this.srd.html = ''; this.srd.error = null;
+        return;
+      }}
+      const key = category + ':' + name;
+      this.srd.category = category; this.srd.name = name; this.srd.error = null;
+      if (this._srdCache[key] !== undefined) {{
+        this.srd.html = this._srdCache[key];
+        this.srd.body = this._srdCache[key] ? name : '';
+        if (!this._srdCache[key]) this.srd.error = 'no SRD entry';
+        return;
+      }}
+      this.srd.loading = true;
+      try {{
+        const r = await fetch('/api/srd/' + category + '/' + encodeURIComponent(name));
+        if (r.status === 404) {{
+          this.srd.body = ''; this.srd.html = ''; this.srd.error = 'no SRD entry'; this._srdCache[key] = '';
+          return;
+        }}
+        if (!r.ok) {{
+          this.srd.body = ''; this.srd.html = ''; this.srd.error = 'HTTP ' + r.status;
+          return;
+        }}
+        const data = await r.json();
+        this.srd.body = data.body;
+        this.srd.html = this._renderMd(data.body);
+        this._srdCache[key] = this.srd.html;
+      }} catch (e) {{
+        this.srd.error = String(e);
+      }} finally {{
+        this.srd.loading = false;
+      }}
+    }},
     renameKey(field, oldKey, newKey) {{
       if (!newKey || newKey === oldKey) return;
       const v = this.form[field][oldKey];
@@ -512,9 +620,10 @@ function characterForm(initial, mode) {{
     }},
   }};
 }}
-window.spellPicker = function(row) {{
+window.spellPicker = function(row, onPick) {{
   return {{
     row,
+    onPick: onPick || function() {{}},
     open: false,
     search: '',
     levelFilter: -1,
@@ -529,6 +638,7 @@ window.spellPicker = function(row) {{
       this.row.name = sp.name;
       this.row.level = sp.level;
       this.open = false;
+      this.onPick(sp.name);
     }},
   }};
 }};

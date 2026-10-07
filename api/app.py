@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from api.characters import router as characters_router
 from api.pages import chat_page, landing_page, memory_page
+from api.srd import router as srd_router
 from db.characters import CharacterRepository
 from db.core import DB_PATH
 from engine.core import (
@@ -43,6 +44,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="pywf", lifespan=lifespan)
 app.include_router(characters_router)
+app.include_router(srd_router)
 
 
 def _ctx(app: FastAPI) -> PartyContext:

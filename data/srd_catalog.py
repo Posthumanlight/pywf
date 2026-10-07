@@ -4,6 +4,10 @@ Parses `data/rules/core_rules.md` and (optionally) `data/rules/homebrew.md`
 once at import. Homebrew entries are suffixed with ' (Homebrew)' in their
 visible names so they're distinguishable in dropdowns and stored sheets.
 Collisions between homebrew and SRD raise `ValueError` at import time.
+
+Also captures the body (prose) of each entry into `BODIES`, keyed by
+`(category, display_name)` where `category` is one of
+`"class" | "subclass" | "species" | "feat" | "spell"`.
 """
 import re
 from pathlib import Path
@@ -20,14 +24,35 @@ _SPELL_META_RE = re.compile(
 _SUBCLASS_RE = re.compile(r"^### (?P<class>\S[^:]*?) Subclass:\s+(?P<name>.+?)\s*$")
 
 
+def _heading_depth(line: str) -> int:
+    """Return 1-4 for a markdown ATX heading at depth 1-4, else 0."""
+    if not line.startswith("#"):
+        return 0
+    depth = len(line) - len(line.lstrip("#"))
+    if depth == 0 or depth > 6:
+        return 0
+    if depth >= len(line) or line[depth] != " ":
+        return 0
+    return depth
+
+
 def _parse_file(path: Path) -> dict:
     """Parse one SRD-formatted markdown file. Returns a dict with keys
-    'classes', 'species', 'feats', 'subclasses', 'spells'. Returns empty
-    collections if the file does not exist or is empty.
+    'classes', 'species', 'feats', 'subclasses', 'spells', 'bodies'.
+    Returns empty collections if the file does not exist or is empty.
     """
-    empty: dict = {"classes": [], "species": [], "feats": [], "subclasses": {}, "spells": []}
+    empty: dict = {
+        "classes": [],
+        "species": [],
+        "feats": [],
+        "subclasses": {},
+        "spells": [],
+        "bodies": {},
+    }
     if not path.exists():
         return empty
+
+    lines = path.read_text(encoding="utf-8").splitlines()
 
     classes: list[str] = []
     species: list[str] = []
@@ -35,12 +60,21 @@ def _parse_file(path: Path) -> dict:
     subclasses: dict[str, list[str]] = {}
     spells: list[dict] = []
 
+    # (category, name, start_line_idx, depth)
+    entries: list[tuple[str, str, int, int]] = []
+    # (line_idx, depth), already sorted because we walk in order
+    headings: list[tuple[int, int]] = []
+
     h1 = h2 = h3 = ""
     current_class = ""
     pending_spell: str | None = None
+    pending_spell_start = -1
 
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for i, raw in enumerate(lines):
         line = raw.rstrip()
+        depth = _heading_depth(line)
+        if depth:
+            headings.append((i, depth))
 
         if line.startswith("# "):
             h1 = line[2:].strip()
@@ -55,6 +89,7 @@ def _parse_file(path: Path) -> dict:
             if h1 == "Classes":
                 if h2 not in classes:
                     classes.append(h2)
+                    entries.append(("class", h2, i, 2))
                 current_class = h2
             else:
                 current_class = ""
@@ -64,18 +99,23 @@ def _parse_file(path: Path) -> dict:
             h3 = line[4:].strip()
             m = _SUBCLASS_RE.match(line)
             if m and h1 == "Classes" and current_class:
-                subclasses.setdefault(current_class, []).append(m.group("name").strip())
+                subname = m.group("name").strip()
+                subclasses.setdefault(current_class, []).append(subname)
+                entries.append(("subclass", subname, i, 3))
                 continue
             if h2 == "Spell Descriptions":
                 pending_spell = h3
+                pending_spell_start = i
             continue
 
         if line.startswith("#### "):
             name = line[5:].strip()
             if h2 == "Character Species" and h3 == "Species Descriptions":
                 species.append(name)
+                entries.append(("species", name, i, 4))
             elif h2 == "Feat Descriptions":
                 feats.append(name)
+                entries.append(("feat", name, i, 4))
             continue
 
         if pending_spell and line.strip():
@@ -93,7 +133,21 @@ def _parse_file(path: Path) -> dict:
                         "classes": caster_classes,
                     }
                 )
+                entries.append(("spell", pending_spell, pending_spell_start, 3))
                 pending_spell = None
+                pending_spell_start = -1
+
+    # Compute body ranges: for each entry, find the first subsequent heading
+    # whose depth is <= entry depth; the body is lines[start:end].
+    bodies: dict[tuple[str, str], str] = {}
+    for cat, name, start, depth in entries:
+        end = len(lines)
+        for h_idx, h_depth in headings:
+            if h_idx > start and h_depth <= depth:
+                end = h_idx
+                break
+        body_text = "\n".join(lines[start:end]).strip("\n")
+        bodies[(cat, name)] = body_text
 
     return {
         "classes": classes,
@@ -101,6 +155,7 @@ def _parse_file(path: Path) -> dict:
         "feats": feats,
         "subclasses": subclasses,
         "spells": spells,
+        "bodies": bodies,
     }
 
 
@@ -112,7 +167,6 @@ def _merge(core: dict, hb: dict) -> dict:
     new subclass to SRD Fighter), not as new classes — no collision there.
     Collisions are reported for subclasses, species, feats, and spells.
     """
-    # Only classes that are truly new in homebrew get added (with suffix).
     core_class_set = set(core["classes"])
     truly_new_hb_classes = [c for c in hb["classes"] if c not in core_class_set]
     hb_new_class_set = set(truly_new_hb_classes)
@@ -140,7 +194,6 @@ def _merge(core: dict, hb: dict) -> dict:
 
     merged_subclasses: dict[str, list[str]] = {k: list(v) for k, v in core["subclasses"].items()}
     for cls, names in hb["subclasses"].items():
-        # If the parent class is truly homebrew, suffix the key too.
         key = cls + sfx if cls in hb_new_class_set else cls
         suffixed = [n + sfx for n in names]
         merged_subclasses.setdefault(key, []).extend(suffixed)
@@ -150,12 +203,24 @@ def _merge(core: dict, hb: dict) -> dict:
     hb_spells_suffixed = [{**s, "name": s["name"] + sfx} for s in hb["spells"]]
     merged_spells = sorted(core["spells"] + hb_spells_suffixed, key=lambda s: s["name"])
 
+    # Bodies: SRD keys stay raw; homebrew keys get the display suffix.
+    # A homebrew `## <SRD class>` is parent context — its body is empty by
+    # construction (no following siblings before the next class heading);
+    # we skip it anyway so it doesn't shadow the SRD body.
+    merged_bodies: dict[tuple[str, str], str] = dict(core["bodies"])
+    for (cat, name), body in hb["bodies"].items():
+        if cat == "class" and name in core_class_set:
+            continue  # parent-context, SRD body already present
+        display_name = name + sfx
+        merged_bodies[(cat, display_name)] = body
+
     return {
         "classes": merged_classes,
         "species": merged_species,
         "feats": merged_feats,
         "subclasses": merged_subclasses,
         "spells": merged_spells,
+        "bodies": merged_bodies,
     }
 
 
@@ -168,3 +233,25 @@ SPECIES = _merged["species"]
 FEATS = _merged["feats"]
 SUBCLASSES = _merged["subclasses"]
 SPELLS = _merged["spells"]
+BODIES = _merged["bodies"]
+
+
+def get_body(category: str, name: str) -> str | None:
+    """Return the SRD/homebrew body text for `(category, name)`, or None.
+
+    Tolerates the ' (Homebrew)' suffix: tries both suffixed and unsuffixed
+    forms so callers don't have to care which they have.
+    """
+    name = (name or "").strip()
+    if not name:
+        return None
+    if (category, name) in BODIES:
+        return BODIES[(category, name)]
+    if name.endswith(_HOMEBREW_SUFFIX):
+        trunc = name[: -len(_HOMEBREW_SUFFIX)]
+        if (category, trunc) in BODIES:
+            return BODIES[(category, trunc)]
+    else:
+        if (category, name + _HOMEBREW_SUFFIX) in BODIES:
+            return BODIES[(category, name + _HOMEBREW_SUFFIX)]
+    return None

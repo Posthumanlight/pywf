@@ -45,7 +45,15 @@ Examples (shown indented so the parser skips them):
 ## Character Species
 
 ### Species Descriptions
+#### Roving Folk
 
+- **Creature Type:** Humanoid
+- **Size:** Medium (about 5-6 feet tall)
+- **Speed:** 30 feet
+
+As an Roving Folk, you have these special traits.
+
+_**Darkvision.**_ You have Darkvision with a range of 60 feet.
 
 # Feats
 
