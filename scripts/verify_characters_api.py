@@ -128,6 +128,30 @@ def main() -> int:
         assert "[x-cloak] { display: none; }" in body, "missing x-cloak CSS rule"
         print("ok  x-cloak CSS rule present")
 
+        # --- SRD dropdowns ---
+        print()
+        print("--- SRD dropdowns ---")
+        assert 'id="srd-classes"' in body and 'value="Wizard"' in body
+        assert 'id="srd-species"' in body and 'value="Dragonborn"' in body
+        assert 'id="srd-feats"' in body and 'value="Alert"' in body
+        assert 'id="srd-subclass-Fighter"' in body and 'value="Champion"' in body
+        print("ok  datalists embedded (classes/species/feats/subclass-Fighter)")
+
+        assert "window.SRD_SPELLS" in body
+        assert '"Acid Arrow"' in body and '"Acid Splash"' in body
+        print("ok  window.SRD_SPELLS payload embedded")
+
+        assert 'list="srd-species"' in body
+        assert 'list="srd-classes"' in body
+        assert 'list="srd-feats"' in body
+        assert ":list=\"'srd-subclass-' + (c.class || '')\"" in body
+        print("ok  inputs reference the datalists (incl. dynamic subclass binding)")
+
+        assert 'x-data="spellPicker(s)"' in body
+        assert 'x-model.number="levelFilter"' in body
+        assert "window.spellPicker" in body
+        print("ok  spell picker widget + Alpine helper present")
+
     print()
     print("all character-API verifications passed")
     return 0

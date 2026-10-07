@@ -6,6 +6,8 @@ import html
 import json
 from typing import Any
 
+from data.srd_catalog import CLASSES, FEATS, SPECIES, SPELLS, SUBCLASSES
+
 
 _HEAD = """<meta charset="utf-8">
 <title>pywf</title>
@@ -36,6 +38,20 @@ _HEAD = """<meta charset="utf-8">
  label { display: block; font-size: .85em; color: #555; margin-bottom: .1em; }
  label.inline { display: inline-block; margin-right: .5em; }
  [x-cloak] { display: none; }
+ .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1em; margin: 1em 0; }
+ .card { border: 1px solid #ddd; border-radius: 6px; padding: 1em; }
+ .card h2 { font-size: 1em; margin: 0 0 .5em 0; }
+ .card .snapshot { color: #555; min-height: 2.5em; }
+ .card .actions { margin-top: .75em; }
+ .back { margin-bottom: 1em; }
+ .back a { color: #06c; }
+ .spell-picker { position: relative; flex: 1; }
+ .spell-picker input { width: 100%; }
+ .suggest { position: absolute; z-index: 10; left: 0; right: 0; background: #fff; border: 1px solid #ddd; padding: .5em; max-height: 20em; overflow: auto; box-shadow: 0 2px 6px rgba(0,0,0,.08); }
+ .suggest ul { list-style: none; padding: 0; margin: .5em 0 0 0; }
+ .suggest li { padding: .25em .5em; cursor: pointer; }
+ .suggest li:hover { background: #eef; }
+ .suggest li.empty { color: #999; font-style: italic; cursor: default; }
 </style>"""
 
 
@@ -44,9 +60,139 @@ def _layout(body: str) -> str:
 
 
 _NAV = """<nav>
- <a href="/">Chat</a>
+ <a href="/">Home</a>
+ <a href="/chat">Chat</a>
  <a href="/characters">Characters</a>
+ <a href="/memory">Memory</a>
 </nav>"""
+
+
+def landing_page(
+    party: list[dict[str, str]],
+    character_count: int,
+    memory: list[dict[str, Any]],
+) -> str:
+    roster = ", ".join(f"{_esc(p['name'])} (@{_esc(p['id'])})" for p in party) or "<em>empty</em>"
+    mem_line = (
+        "; ".join(f"{_esc(m['name'])}: {m['thread_rounds']} rounds / {m['episodes']} episodes" for m in memory)
+        or "<em>no activity yet</em>"
+    )
+    body = f"""{_NAV}
+<h1>pywf</h1>
+<p>AI player-character agents for a tabletop D&amp;D 5e party.</p>
+<div class="cards">
+ <section class="card">
+  <h2>Chat</h2>
+  <div class="snapshot">Party: {roster}.</div>
+  <div class="actions"><a class="btn" href="/chat">Open chat</a></div>
+ </section>
+ <section class="card">
+  <h2>Characters</h2>
+  <div class="snapshot">{character_count} character(s) in the database.</div>
+  <div class="actions">
+   <a class="btn" href="/characters/new">+ New character</a>
+   <a href="/characters">View all</a>
+  </div>
+ </section>
+ <section class="card">
+  <h2>Memory</h2>
+  <div class="snapshot">{mem_line}</div>
+  <div class="actions"><a class="btn" href="/memory">Open memory</a></div>
+ </section>
+</div>"""
+    return _layout(body)
+
+
+def memory_page(stats: list[dict[str, Any]]) -> str:
+    if not stats:
+        rows = '<tr><td colspan="8"><em>No party loaded.</em></td></tr>'
+    else:
+        rows = "\n".join(
+            f"""<tr>
+ <td>{_esc(s.get('character_id', ''))}</td>
+ <td>{_esc(s.get('name', ''))}</td>
+ <td>{_esc(s.get('thread_rounds', 0))}</td>
+ <td>{_esc(s.get('thread_messages', 0))}</td>
+ <td>{_esc(s.get('rounds_until_archive', 0))}</td>
+ <td>{_esc(s.get('episodes', 0))}</td>
+ <td>{'yes' if s.get('has_chronicle') else 'no'}</td>
+ <td>{_esc(s.get('archived_rounds', 0))}</td>
+</tr>"""
+            for s in stats
+        )
+    body = f"""{_NAV}
+<h1>Memory</h1>
+<p>Per-character thread + long-term memory stats. See <a href="/api/memory">/api/memory</a> for the JSON view.</p>
+<table>
+ <thead><tr>
+  <th>id</th><th>name</th>
+  <th>thread rounds</th><th>thread msgs</th><th>rounds until archive</th>
+  <th>episodes</th><th>chronicle</th><th>archived rounds</th>
+ </tr></thead>
+ <tbody>{rows}</tbody>
+</table>"""
+    return _layout(body)
+
+
+def chat_page() -> str:
+    body = """<p class="back"><a href="/">← Back to home</a></p>
+<h1>Chat <span id="roster"></span></h1>
+<div id="log"></div>
+<form id="f">
+ <input id="dm" placeholder="DM> type here (prefix @id to target one)" autofocus autocomplete="off">
+ <button type="submit">send</button>
+</form>
+<style>
+ #log { white-space: pre-wrap; min-height: 50vh; border: 1px solid #ddd; padding: 1em; margin: 0; }
+ #log .speaker { font-weight: bold; }
+ #log .err { color: #a00; }
+ form { display: flex; gap: .5em; margin-top: 1em; }
+ #dm { flex: 1; padding: .5em; font: inherit; }
+ #roster { color: #666; font-weight: normal; }
+</style>
+<script>
+const log = document.getElementById('log');
+const esc = s => s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function append(speaker, text, cls) {
+  const div = document.createElement('div');
+  div.innerHTML = `<span class="speaker ${cls||''}">${esc(speaker)}&gt;</span> <span class="${cls||''}">${esc(text)}</span>`;
+  log.appendChild(div);
+  window.scrollTo(0, document.body.scrollHeight);
+}
+async function loadParty() {
+  try {
+    const r = await fetch('/party');
+    const data = await r.json();
+    document.getElementById('roster').textContent =
+      '— party: ' + data.party.map(p => `${p.name} (@${p.id})`).join(', ');
+  } catch (e) { append('error', 'failed to load /party: ' + e, 'err'); }
+}
+document.getElementById('f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const input = document.getElementById('dm');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  append('DM', text);
+  try {
+    const r = await fetch('/chat', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({dm: text}),
+    });
+    if (!r.ok) {
+      const body = await r.text();
+      append('error', `HTTP ${r.status}: ${body}`, 'err');
+      return;
+    }
+    const data = await r.json();
+    for (const t of data.turns) append(t.name, t.text);
+  } catch (err) { append('error', String(err), 'err'); }
+});
+loadParty();
+</script>
+"""
+    return _layout(body)
 
 
 def characters_list_page(items: list[dict[str, str]]) -> str:
@@ -108,6 +254,24 @@ _EMPTY_FORM = {
 }
 
 
+def _datalist(id_: str, options: list[str]) -> str:
+    opts = "".join(f'<option value="{_esc(name)}">' for name in options)
+    return f'<datalist id="{_esc(id_)}">{opts}</datalist>'
+
+
+def _srd_datalists_html() -> str:
+    spells_json = json.dumps(SPELLS).replace("</", "<\\/")
+    parts = [
+        f"<script>window.SRD_SPELLS = {spells_json};</script>",
+        _datalist("srd-classes", CLASSES),
+        _datalist("srd-species", SPECIES),
+        _datalist("srd-feats", FEATS),
+    ]
+    for class_name, subs in SUBCLASSES.items():
+        parts.append(_datalist(f"srd-subclass-{class_name}", subs))
+    return "\n".join(parts)
+
+
 def character_form_page(mode: str, initial: dict[str, Any] | None = None) -> str:
     assert mode in ("new", "edit")
     data = {**_EMPTY_FORM, **(initial or {})}
@@ -118,8 +282,10 @@ def character_form_page(mode: str, initial: dict[str, Any] | None = None) -> str
     data = {k: data.get(k, _EMPTY_FORM.get(k)) for k in _EMPTY_FORM}
     data_attr = html.escape(json.dumps(data), quote=True)
     mode_attr = html.escape(json.dumps(mode), quote=True)
+    srd_block = _srd_datalists_html()
     body = f"""{_NAV}
 <h1>{'Edit character' if mode == 'edit' else 'New character'}</h1>
+{srd_block}
 <div x-data="characterForm({data_attr}, {mode_attr})" x-cloak>
  <template x-if="error">
   <div class="error" x-text="error"></div>
@@ -129,7 +295,7 @@ def character_form_page(mode: str, initial: dict[str, Any] | None = None) -> str
   <div class="grid">
    <div><label>id (slug, lowercase)</label><input type="text" x-model="form.id" :readonly="mode === 'edit'"></div>
    <div><label>name</label><input type="text" x-model="form.name"></div>
-   <div><label>species</label><input type="text" x-model="form.species"></div>
+   <div><label>species</label><input type="text" x-model="form.species" list="srd-species"></div>
    <div><label>background</label><input type="text" x-model="form.background"></div>
    <div><label>alignment</label><input type="text" x-model="form.alignment"></div>
    <div><label>origin feat</label><input type="text" x-model="form.origin_feat"></div>
@@ -159,9 +325,9 @@ def character_form_page(mode: str, initial: dict[str, Any] | None = None) -> str
  <fieldset><legend>Classes</legend>
   <template x-for="(c, i) in form.classes" :key="i">
    <div class="row">
-    <input placeholder="class (e.g. Fighter)" x-model="c.class">
+    <input placeholder="class (e.g. Fighter)" x-model="c.class" list="srd-classes">
     <input type="number" placeholder="level" x-model.number="c.level" style="max-width: 6em;">
-    <input placeholder="subclass (optional)" x-model="c.subclass">
+    <input placeholder="subclass (optional)" x-model="c.subclass" :list="'srd-subclass-' + (c.class || '')">
     <button type="button" class="btn-danger" @click="form.classes.splice(i, 1)">x</button>
    </div>
   </template>
@@ -171,7 +337,7 @@ def character_form_page(mode: str, initial: dict[str, Any] | None = None) -> str
  <fieldset><legend>Feats</legend>
   <template x-for="(f, i) in form.feats" :key="i">
    <div class="row">
-    <input placeholder="name" x-model="f.name">
+    <input placeholder="name" x-model="f.name" list="srd-feats">
     <input placeholder="source (e.g. origin)" x-model="f.source">
     <button type="button" class="btn-danger" @click="form.feats.splice(i, 1)">x</button>
    </div>
@@ -208,7 +374,35 @@ def character_form_page(mode: str, initial: dict[str, Any] | None = None) -> str
  <fieldset><legend>Spells</legend>
   <template x-for="(s, i) in form.spells" :key="i">
    <div class="row">
-    <input placeholder="name" x-model="s.name">
+    <div class="spell-picker" x-data="spellPicker(s)" @click.outside="open=false">
+     <input placeholder="name" x-model="s.name" @focus="open=true">
+     <template x-if="open">
+      <div class="suggest">
+       <div class="row">
+        <input placeholder="search" x-model="search">
+        <select x-model.number="levelFilter">
+         <option value="-1">any level</option>
+         <option value="0">cantrip</option>
+         <option value="1">1</option>
+         <option value="2">2</option>
+         <option value="3">3</option>
+         <option value="4">4</option>
+         <option value="5">5</option>
+         <option value="6">6</option>
+         <option value="7">7</option>
+         <option value="8">8</option>
+         <option value="9">9</option>
+        </select>
+       </div>
+       <ul>
+        <template x-for="sp in filtered()" :key="sp.name">
+         <li @click="pick(sp)" x-text="sp.name + ' — ' + (sp.level === 0 ? 'cantrip' : 'L' + sp.level) + ' ' + sp.school"></li>
+        </template>
+        <li x-show="filtered().length === 0" class="empty">no matches</li>
+       </ul>
+      </div>
+     </template>
+    </div>
     <input type="number" placeholder="level" x-model.number="s.level" style="max-width: 6em;">
     <label class="inline"><input type="checkbox" x-model="s.prepared"> prepared</label>
     <input placeholder="always_prepared source" x-model="s.always_prepared">
@@ -318,6 +512,26 @@ function characterForm(initial, mode) {{
     }},
   }};
 }}
+window.spellPicker = function(row) {{
+  return {{
+    row,
+    open: false,
+    search: '',
+    levelFilter: -1,
+    filtered() {{
+      const q = (this.search || this.row.name || '').toLowerCase();
+      return (window.SRD_SPELLS || []).filter(sp =>
+        (this.levelFilter < 0 || sp.level === this.levelFilter) &&
+        (!q || sp.name.toLowerCase().includes(q))
+      ).slice(0, 50);
+    }},
+    pick(sp) {{
+      this.row.name = sp.name;
+      this.row.level = sp.level;
+      this.open = false;
+    }},
+  }};
+}};
 </script>
 """
     return _layout(body)
