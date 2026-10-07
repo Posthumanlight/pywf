@@ -7,6 +7,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.store.sqlite import SqliteStore
 from pydantic import BaseModel
 
+from api.characters import router as characters_router
 from db.core import DB_PATH
 from engine.core import (
     MissingCharactersError,
@@ -109,6 +110,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="pywf", lifespan=lifespan)
+app.include_router(characters_router)
 
 
 def _ctx(app: FastAPI) -> PartyContext:

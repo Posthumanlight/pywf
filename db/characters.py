@@ -182,6 +182,11 @@ class CharacterRepository:
             rows = conn.execute("SELECT id FROM characters ORDER BY id").fetchall()
         return [r["id"] for r in rows]
 
+    def list_summaries(self) -> list[dict[str, str]]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT id, name FROM characters ORDER BY id").fetchall()
+        return [{"id": r["id"], "name": r["name"]} for r in rows]
+
     def get_characters_json(self, char_id: str) -> str | None:
         """Return the JSON-encoded character sheet for `char_id`, or `None` if no such character exists."""
         with self._connect() as conn:
