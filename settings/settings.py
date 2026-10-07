@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     interface: Literal["cli", "api"] = "cli"
     api_host: str = "127.0.0.1"
     api_port: int = 8000
+    # Long-term memory: archive a thread once it holds more than `trigger` rounds, keeping the last `keep`.
+    memory_model: str = ""  # empty = same model as the player agents
+    memory_trigger_rounds: int = 30
+    memory_keep_rounds: int = 10
+    memory_max_episodes: int = 6
 
     @property
     def party(self) -> tuple[str, ...]:

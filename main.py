@@ -1,5 +1,6 @@
 """pywf entry point: dispatches to CLI REPL or FastAPI server based on settings."""
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.store.sqlite import SqliteStore
 
 from db.core import DB_PATH
 from engine.core import (
@@ -8,6 +9,7 @@ from engine.core import (
     UnknownTargetError,
     build_party,
     parse_dm_line,
+    party_memory_stats,
     run_round,
 )
 from settings.settings import settings
@@ -18,14 +20,15 @@ def _print_banner(ctx: PartyContext) -> None:
     print(f"pywf — party: {roster}")
     print("Type DM narration / direct address. Mark your OOC lines with [OOC: ...].")
     print("Prefix with @<id> to speak to one party member (e.g. '@thorin ...').")
-    print("Commands: /exit, /quit")
+    print("Commands: /memory, /exit, /quit")
     print()
 
 
 def run_cli() -> int:
-    with SqliteSaver.from_conn_string(str(DB_PATH)) as saver:
+    with SqliteSaver.from_conn_string(str(DB_PATH)) as saver, SqliteStore.from_conn_string(str(DB_PATH)) as store:
+        store.setup()
         try:
-            ctx = build_party(saver)
+            ctx = build_party(saver, store)
         except MissingCharactersError as exc:
             print(exc)
             print(f"Available ids: {exc.available}")
@@ -49,6 +52,15 @@ def run_cli() -> int:
                 continue
             if prompt.lower() in ("/exit", "/quit"):
                 return 0
+            if prompt.lower() == "/memory":
+                for s in party_memory_stats(ctx):
+                    print(
+                        f"{s['name']} (@{s['character_id']}): {s['thread_rounds']} rounds / "
+                        f"{s['thread_messages']} msgs in thread, archive in {s['rounds_until_archive']} rounds; "
+                        f"long-term: {s['episodes']} episodes, chronicle={'yes' if s['has_chronicle'] else 'no'}, "
+                        f"{s['archived_rounds']} rounds archived"
+                    )
+                continue
 
             try:
                 parsed = parse_dm_line(prompt, ctx.party_ids)

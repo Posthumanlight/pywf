@@ -25,6 +25,7 @@ Env config lives in `.env` at the repo root; `GEMINI_API_KEY` is required ([sett
 ## Layout
 
 - [agent/core/agent.py](agent/core/agent.py) — builds the `player_agent` with the system prompt and tool set.
+- [agent/core/memory.py](agent/core/memory.py) — `MemoryMiddleware`: archives old rounds of a character's thread into a LangGraph `SqliteStore` (namespace `("memories", <character_id>)`: rolling `episode:*` summaries + one `chronicle`) and injects them into the system prompt. Thresholds live in `settings` (`memory_*`). Stats via CLI `/memory` or `GET /memory`.
 - [agent/tools/](agent/tools/) — tools exposed to the agent:
   - [srd_rules_retriever.py](agent/tools/srd_rules_retriever.py) — RAG over SRD markdown via sqlite-vec + Gemini embeddings.
   - [get_character_sheet.py](agent/tools/get_character_sheet.py) — reads a character sheet by id from SQLite.

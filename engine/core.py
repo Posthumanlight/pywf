@@ -7,6 +7,7 @@ from typing import Any, Sequence, TypedDict
 from langchain_core.runnables import RunnableConfig
 
 from agent.core.agent import build_player_agent
+from agent.core.memory import memory_stats
 from db.characters import CharacterRepository
 from settings.settings import settings
 
@@ -22,6 +23,7 @@ class PartyContext:
     agents: dict[str, Any]
     names: dict[str, str]
     party_ids: list[str]
+    store: Any = None
 
 
 @dataclass
@@ -44,7 +46,7 @@ class MissingCharactersError(Exception):
         self.available = list(available)
 
 
-def build_party(saver) -> PartyContext:
+def build_party(saver, store=None) -> PartyContext:
     party_ids = list(settings.party)
     if not party_ids:
         raise ValueError("No character_ids configured. Set character_ids=<id1>,<id2>,... in .env")
@@ -71,9 +73,10 @@ def build_party(saver) -> PartyContext:
             party_member_names=peers,
             checkpointer=saver,
             model_fallbacks=fallbacks,
+            store=store,
         )
 
-    return PartyContext(agents=agents, names=names, party_ids=party_ids)
+    return PartyContext(agents=agents, names=names, party_ids=party_ids, store=store)
 
 
 def parse_dm_line(line: str, party_ids: Sequence[str]) -> ParsedLine:
@@ -132,3 +135,10 @@ def run_round(ctx: PartyContext, dm_text: str, order: list[str]) -> list[Turn]:
         turns.append(Turn(character_id=cid, name=ctx.names[cid], text=reply))
         prior.append((ctx.names[cid], reply))
     return turns
+
+
+def party_memory_stats(ctx: PartyContext) -> list[dict]:
+    return [
+        {"name": ctx.names[cid], **memory_stats(ctx.agents[cid], ctx.store, cid, settings.memory_trigger_rounds)}
+        for cid in ctx.party_ids
+    ]

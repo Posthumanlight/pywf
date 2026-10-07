@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.store.sqlite import SqliteStore
 from pydantic import BaseModel
 
 from db.core import DB_PATH
@@ -13,6 +14,7 @@ from engine.core import (
     UnknownTargetError,
     build_party,
     parse_dm_line,
+    party_memory_stats,
     run_round,
 )
 
@@ -93,9 +95,10 @@ class ChatRequest(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    with SqliteSaver.from_conn_string(str(DB_PATH)) as saver:
+    with SqliteSaver.from_conn_string(str(DB_PATH)) as saver, SqliteStore.from_conn_string(str(DB_PATH)) as store:
+        store.setup()
         try:
-            ctx = build_party(saver)
+            ctx = build_party(saver, store)
         except MissingCharactersError as exc:
             raise RuntimeError(
                 f"{exc} Available ids: {exc.available}. "
@@ -121,6 +124,11 @@ def index() -> str:
 def party() -> dict:
     ctx = _ctx(app)
     return {"party": [{"id": cid, "name": ctx.names[cid]} for cid in ctx.party_ids]}
+
+
+@app.get("/memory")
+def memory() -> dict:
+    return {"party": party_memory_stats(_ctx(app))}
 
 
 @app.post("/chat")
