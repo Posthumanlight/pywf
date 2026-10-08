@@ -1,24 +1,26 @@
-"""Non-model verification of the lorebook: loader, matcher, activation, API."""
+"""Non-model verification of the lorebook: normalizer, matcher, activation, DB repo, API."""
 import sys
-import tempfile
-import textwrap
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fastapi.testclient import TestClient
 
+from db.lorebook import LorebookRepository
 from lorebook.activation import activate
-from lorebook.loader import LorebookValidationError, load
+from lorebook.loader import Lorebook, LorebookValidationError, load, validate_visibility
 from lorebook.matcher import Matcher
 from lorebook.models import BookSettings, Entry, Logic, Position, Visibility
 from lorebook.normalizer import normalize
 
+VERIFY_PREFIX = "__verify_"
 
-def _write(dir_path: Path, name: str, body: str) -> Path:
-    p = dir_path / name
-    p.write_text(textwrap.dedent(body).lstrip(), encoding="utf-8")
-    return p
+
+def _cleanup_verify_rows() -> None:
+    repo = LorebookRepository()
+    for s in repo.list_summaries():
+        if s["id"].startswith(VERIFY_PREFIX):
+            repo.delete(s["id"])
 
 
 def verify_normalizer() -> None:
@@ -26,7 +28,6 @@ def verify_normalizer() -> None:
     assert normalize("The Duke OF Veyl", case_sensitive=False, normalize_unicode=True) == "the duke of veyl"
     assert normalize("The Duke OF Veyl", case_sensitive=True, normalize_unicode=True) == "The Duke OF Veyl"
     assert normalize("  spaced\t out\n ", case_sensitive=False, normalize_unicode=True) == "spaced out"
-    # NFKC: fullwidth 'A' -> ascii 'a' after casefold
     assert normalize("Ａ", case_sensitive=False, normalize_unicode=True) == "a"
     print("ok  normalizer: casefold, NFKC, whitespace collapse")
 
@@ -34,184 +35,65 @@ def verify_normalizer() -> None:
 def verify_matcher() -> None:
     print()
     print("--- matcher ---")
-    settings = BookSettings()  # case_sensitive=False, whole_word=True
+    settings = BookSettings()
     entries = [
         Entry(id="veyl", keys=["Veyl"], content="x"),
         Entry(id="vel", keys=["vel"], content="x"),
         Entry(id="rx", key_regex=[r"\bthe (duke|duchess)\b"], content="x"),
     ]
     m = Matcher(entries, settings)
-
     ids = {h.entry_id for h in m.scan("the Duke of Veyl rides tonight")}
-    assert "veyl" in ids, ids
-    assert "rx" in ids, ids
-    # whole_word: 'vel' must NOT match inside 'revelatory'
+    assert "veyl" in ids and "rx" in ids, ids
     ids2 = {h.entry_id for h in m.scan("a revelatory evening")}
     assert "vel" not in ids2, ids2
     print("ok  matcher: AC+regex hit, whole_word suppresses substring")
 
 
-def verify_loader_happy_path() -> None:
-    print()
-    print("--- loader (happy path) ---")
-    with tempfile.TemporaryDirectory() as td:
-        root = Path(td)
-        _write(root, "_book.yaml", """
-            scan_depth: 2
-            token_budget: 500
-            whole_word: true
-        """)
-        _write(root, "veyl.md", """
-            ---
-            id: veyl
-            keys: ["Veyl"]
-            priority: 10
-            ---
-            House Veyl rules the eastern march.
-        """)
-        _write(root, "primer.md", """
-            ---
-            id: primer
-            constant: true
-            ---
-            The known world is called Thannos.
-        """)
-        _write(root, "yaml_entry.yaml", """
-            id: raw
-            keys: ["Marren"]
-            content: |
-              House Marren guards the north pass.
-        """)
-        _write(root, "README.md", "ignored\n")
-
-        book = load(root)
-        assert set(book.entries) == {"veyl", "primer", "raw"}, book.entries
-        assert book.settings.token_budget == 500
-        assert book.entries["primer"].constant is True
-        # token_count = ceil(len/4)
-        for e in book.entries.values():
-            assert e.token_count == (len(e.content) + 3) // 4, (e.id, e.token_count, len(e.content))
-    print("ok  loader parses md + yaml, skips README, honors _book.yaml, precomputes token_count")
-
-
-def verify_loader_errors() -> None:
-    print()
-    print("--- loader (errors) ---")
-    # Duplicate id
-    with tempfile.TemporaryDirectory() as td:
-        root = Path(td)
-        _write(root, "a.md", "---\nid: dup\nkeys: [\"a\"]\n---\nA body\n")
-        _write(root, "b.md", "---\nid: dup\nkeys: [\"b\"]\n---\nB body\n")
-        try:
-            load(root)
-        except LorebookValidationError as exc:
-            assert any("duplicate" in e for e in exc.errors), exc.errors
-            print("ok  duplicate id -> LorebookValidationError")
-        else:
-            raise AssertionError("expected LorebookValidationError")
-
-    # Empty content
-    with tempfile.TemporaryDirectory() as td:
-        root = Path(td)
-        _write(root, "empty.md", "---\nid: empty\n---\n   \n")
-        try:
-            load(root)
-        except LorebookValidationError as exc:
-            assert any("empty content" in e for e in exc.errors), exc.errors
-            print("ok  empty content -> LorebookValidationError")
-        else:
-            raise AssertionError("expected LorebookValidationError")
-
-    # Visibility pointing at unknown character id
-    with tempfile.TemporaryDirectory() as td:
-        root = Path(td)
-        _write(root, "secret.md", """
-            ---
-            id: secret
-            keys: ["secret"]
-            visibility: ["__ghost_not_in_db__"]
-            ---
-            top secret
-        """)
-        try:
-            load(root)
-        except LorebookValidationError as exc:
-            assert any("unknown character" in e for e in exc.errors), exc.errors
-            print("ok  unknown character in visibility -> LorebookValidationError")
-        else:
-            raise AssertionError("expected LorebookValidationError")
-
-
-def _one_entry_book(entries: list[Entry], settings: BookSettings | None = None):
-    """Build a Lorebook in-memory (no filesystem) for activation tests."""
-    from lorebook.loader import Lorebook
-    s = settings or BookSettings()
-    return Lorebook(path=Path("/dev/null"), entries={e.id: e for e in entries}, settings=s)
+def _one_entry_book(entries: list[Entry], settings: BookSettings | None = None) -> Lorebook:
+    return Lorebook(entries={e.id: e for e in entries}, settings=settings or BookSettings())
 
 
 def verify_activation() -> None:
     print()
     print("--- activation ---")
-    # Direct hit, with no secondaries.
     book = _one_entry_book([Entry(id="veyl", keys=["Veyl"], content="veyl body")])
-    r = activate(book, "the Veyl summoned us", character_id="thorin")
-    assert [e.id for e in r.activated] == ["veyl"], r.activated
-    print("ok  direct keyword hit fires")
+    assert [e.id for e in activate(book, "the Veyl summoned us", character_id="x").activated] == ["veyl"]
 
-    # Secondary AND_ANY: fires with one secondary.
-    book = _one_entry_book([Entry(id="veyl", keys=["Veyl"],
-                                  secondary_keys=["House", "duke"],
+    book = _one_entry_book([Entry(id="veyl", keys=["Veyl"], secondary_keys=["House", "duke"],
                                   secondary_logic=Logic.AND_ANY, content="veyl body")])
-    assert [e.id for e in activate(book, "the duke of Veyl", character_id="cid").activated] == ["veyl"]
-    # AND_ANY with neither secondary present → suppressed.
-    assert [e.id for e in activate(book, "a Veyl walks by", character_id="cid").activated] == []
-    print("ok  AND_ANY secondary gate works both ways")
+    assert [e.id for e in activate(book, "the duke of Veyl", character_id="x").activated] == ["veyl"]
+    assert activate(book, "a Veyl walks by", character_id="x").activated == []
 
-    # AND_ALL
-    book = _one_entry_book([Entry(id="veyl", keys=["Veyl"],
-                                  secondary_keys=["House", "duke"],
+    book = _one_entry_book([Entry(id="veyl", keys=["Veyl"], secondary_keys=["House", "duke"],
                                   secondary_logic=Logic.AND_ALL, content="veyl body")])
-    assert [e.id for e in activate(book, "duke Veyl of the House", character_id="cid").activated] == ["veyl"]
-    assert [e.id for e in activate(book, "duke Veyl rides", character_id="cid").activated] == []
-    print("ok  AND_ALL secondary gate works both ways")
+    assert [e.id for e in activate(book, "duke Veyl of the House", character_id="x").activated] == ["veyl"]
+    assert activate(book, "duke Veyl rides", character_id="x").activated == []
 
-    # NOT
-    book = _one_entry_book([Entry(id="veyl", keys=["Veyl"],
-                                  secondary_keys=["imposter"],
+    book = _one_entry_book([Entry(id="veyl", keys=["Veyl"], secondary_keys=["imposter"],
                                   secondary_logic=Logic.NOT, content="veyl body")])
-    assert [e.id for e in activate(book, "the Veyl approaches", character_id="cid").activated] == ["veyl"]
-    assert [e.id for e in activate(book, "the Veyl imposter", character_id="cid").activated] == []
-    print("ok  NOT secondary gate works both ways")
+    assert [e.id for e in activate(book, "the Veyl approaches", character_id="x").activated] == ["veyl"]
+    assert activate(book, "the Veyl imposter", character_id="x").activated == []
 
-    # Constant
     book = _one_entry_book([Entry(id="primer", constant=True, content="world is Thannos")])
-    assert [e.id for e in activate(book, "unrelated banter", character_id="cid").activated] == ["primer"]
-    print("ok  constant entry fires without keys")
+    assert [e.id for e in activate(book, "unrelated banter", character_id="x").activated] == ["primer"]
 
-    # Recursion: A activates, A's content mentions B's key, B fires.
     book = _one_entry_book([
         Entry(id="A", keys=["Veyl"], content="See also House Marren for context."),
         Entry(id="B", keys=["Marren"], content="Marren body"),
     ])
-    r = activate(book, "the Veyl", character_id="cid")
-    assert {e.id for e in r.activated} == {"A", "B"}, r.activated
-    # not_triggerable_by_recursion blocks B.
+    assert {e.id for e in activate(book, "the Veyl", character_id="x").activated} == {"A", "B"}
+
     book = _one_entry_book([
         Entry(id="A", keys=["Veyl"], content="See also House Marren."),
         Entry(id="B", keys=["Marren"], not_triggerable_by_recursion=True, content="Marren body"),
     ])
-    r = activate(book, "the Veyl", character_id="cid")
-    assert {e.id for e in r.activated} == {"A"}, r.activated
-    print("ok  recursion fires linked entries; not_triggerable_by_recursion blocks it")
+    assert {e.id for e in activate(book, "the Veyl", character_id="x").activated} == {"A"}
 
-    # Visibility list filters per-agent.
     book = _one_entry_book([Entry(id="secret", keys=["pass"], visibility=["mira"], content="secret word")])
-    assert [e.id for e in activate(book, "the pass is open", character_id="thorin").activated] == []
+    assert activate(book, "the pass is open", character_id="thorin").activated == []
     assert [e.id for e in activate(book, "the pass is open", character_id="mira").activated] == ["secret"]
-    print("ok  visibility list filters per character")
 
-    # Budget drops lowest priority first.
-    big = "x" * 200  # token_count = 50
+    big = "x" * 200
     book = _one_entry_book(
         [
             Entry(id="hi", keys=["word"], priority=10, content=big),
@@ -219,71 +101,210 @@ def verify_activation() -> None:
         ],
         settings=BookSettings(token_budget=50),
     )
-    # Precompute token_count the way loader would:
     for e in book.entries.values():
         e.token_count = (len(e.content) + 3) // 4
-    r = activate(book, "the word fires both", character_id="cid")
+    r = activate(book, "the word fires both", character_id="x")
     assert [e.id for e in r.activated] == ["hi"], r.activated
     assert any(t.entry_id == "lo" and t.dropped_budget for t in r.trace), r.trace
-    print("ok  budget drops lower-priority entries and traces them")
+    print("ok  activation covers direct/AND_ANY/AND_ALL/NOT/constant/recursion/visibility/budget")
 
 
-def verify_api() -> None:
+def verify_repo_roundtrip() -> None:
     print()
-    print("--- API endpoints ---")
-    # Importing app triggers lifespan on TestClient enter -- lifespan reads data/lore/
-    # which contains the shipped example entry.
+    print("--- repo roundtrip ---")
+    _cleanup_verify_rows()
+    repo = LorebookRepository()
+    entry = Entry(
+        id=f"{VERIFY_PREFIX}veyl",
+        title="House Veyl",
+        keys=["Veyl"],
+        key_regex=[r"\bveylish\b"],
+        secondary_keys=["House", "duke"],
+        secondary_logic=Logic.AND_ANY,
+        constant=False,
+        priority=10,
+        position=Position.AFTER,
+        no_recurse_into=False,
+        not_triggerable_by_recursion=False,
+        visibility=Visibility.GLOBAL,
+        content="House Veyl rules the eastern march.",
+    )
+    repo.upsert(entry)
+    try:
+        read = repo.get(entry.id)
+        assert read is not None
+        assert read.id == entry.id
+        assert read.keys == ["Veyl"]
+        assert read.key_regex == [r"\bveylish\b"]
+        assert read.secondary_logic == Logic.AND_ANY
+        assert read.visibility == Visibility.GLOBAL
+        assert read.token_count == (len(entry.content) + 3) // 4
+        print(f"ok  upsert + get roundtrip; token_count={read.token_count}")
+
+        # List summaries reflects the entry.
+        ids = [s["id"] for s in repo.list_summaries()]
+        assert entry.id in ids, ids
+        print("ok  list_summaries contains the new id")
+
+        # Partial update via upsert.
+        updated = entry.model_copy(update={"title": "House Veyl (updated)", "priority": 20})
+        repo.upsert(updated)
+        read2 = repo.get(entry.id)
+        assert read2.title == "House Veyl (updated)"
+        assert read2.priority == 20
+        print("ok  upsert overwrites fields on existing id")
+
+        # List-style visibility roundtrip.
+        list_entry = entry.model_copy(update={"id": f"{VERIFY_PREFIX}secret", "visibility": ["thorin"]})
+        repo.upsert(list_entry)
+        read_list = repo.get(list_entry.id)
+        assert read_list.visibility == ["thorin"], read_list.visibility
+        print("ok  list-shaped visibility roundtrips as a list")
+
+        # Delete + double-delete.
+        assert repo.delete(entry.id) is True
+        assert repo.delete(entry.id) is False
+        assert repo.get(entry.id) is None
+        print("ok  delete returns True once, False thereafter")
+    finally:
+        _cleanup_verify_rows()
+
+
+def verify_settings_roundtrip() -> None:
+    print()
+    print("--- settings roundtrip ---")
+    repo = LorebookRepository()
+    original = repo.get_settings()
+    try:
+        tweaked = original.model_copy(update={"token_budget": 123, "max_recursion": 7})
+        repo.update_settings(tweaked)
+        read = repo.get_settings()
+        assert read.token_budget == 123 and read.max_recursion == 7
+        print(f"ok  update_settings persists ({read.token_budget=}, {read.max_recursion=})")
+    finally:
+        repo.update_settings(original)
+
+
+def verify_validation() -> None:
+    print()
+    print("--- validation ---")
+    repo = LorebookRepository()
+
+    # Empty content.
+    try:
+        repo.upsert(Entry(id=f"{VERIFY_PREFIX}empty", content="   "))
+    except ValueError as e:
+        assert "empty" in str(e).lower()
+        print("ok  empty content -> ValueError")
+    else:
+        raise AssertionError("expected ValueError for empty content")
+
+    # Visibility against unknown character id -> validate_visibility returns an error.
+    entry = Entry(id=f"{VERIFY_PREFIX}secret", content="body", visibility=["__ghost_not_in_db__"])
+    errors = validate_visibility(entry)
+    assert errors and "unknown character" in errors[0], errors
+    print("ok  validate_visibility flags unknown cids")
+
+
+def verify_api_crud() -> None:
+    print()
+    print("--- API CRUD ---")
     from api.app import app
 
     with TestClient(app) as c:
-        r = c.get("/api/lorebook")
-        assert r.status_code == 200, r.text
-        data = r.json()
-        assert "settings" in data and "entries" in data
-        ids = {e["id"] for e in data["entries"]}
-        print(f"ok  GET /api/lorebook lists {len(data['entries'])} entries ({sorted(ids)}) from {data['path']}")
-
-        r = c.post("/api/lorebook/reload")
-        assert r.status_code == 200, r.text
-        assert r.json()["entries"] == len(data["entries"])
-        print("ok  POST /api/lorebook/reload re-reads the directory")
-
-        # Validation failure path: write a bad file into the real dir (duplicates one of
-        # the existing entry ids), reload, assert 400, confirm the previous in-memory book
-        # is unchanged, then clean up.
-        from settings.settings import settings as _settings
-        bad = _settings.BASE_PATH / "data" / "lore" / "__verify_bad.md"
-        duplicate_id = next(iter(ids)) if ids else "ghost"
-        bad.write_text(
-            f"---\nid: {duplicate_id}\n---\nduplicate id with an existing entry\n",
-            encoding="utf-8",
-        )
+        _cleanup_verify_rows()
+        entry_id = f"{VERIFY_PREFIX}veyl"
         try:
+            payload = {
+                "id": entry_id,
+                "title": "Verify Veyl",
+                "keys": ["Veyl"],
+                "key_regex": [],
+                "secondary_keys": [],
+                "secondary_logic": "and_any",
+                "constant": False,
+                "priority": 5,
+                "position": "after",
+                "no_recurse_into": False,
+                "not_triggerable_by_recursion": False,
+                "visibility": "global",
+                "content": "House Veyl rules the eastern march.",
+            }
+            r = c.post("/api/lorebook/entries", json=payload)
+            assert r.status_code == 201, r.text
+            print("ok  POST /api/lorebook/entries -> 201")
+
+            r = c.post("/api/lorebook/entries", json=payload)
+            assert r.status_code == 409, r.text
+            print("ok  POST duplicate id -> 409")
+
+            summaries = c.get("/api/lorebook/entries").json()["items"]
+            assert any(s["id"] == entry_id for s in summaries), summaries
+            print("ok  GET /api/lorebook/entries lists the new entry")
+
+            # In-memory refresh after write.
+            assert entry_id in app.state.lorebook.entries, list(app.state.lorebook.entries)
+            print("ok  app.state.lorebook refreshed after POST (no reload call)")
+
+            updated = {**payload, "title": "Verify Veyl v2"}
+            r = c.put(f"/api/lorebook/entries/{entry_id}", json=updated)
+            assert r.status_code == 200, r.text
+            assert c.get(f"/api/lorebook/entries/{entry_id}").json()["title"] == "Verify Veyl v2"
+            print("ok  PUT updates")
+
+            r = c.put(f"/api/lorebook/entries/{entry_id}", json={**payload, "id": "mismatch"})
+            assert r.status_code == 400, r.text
+            print("ok  PUT with mismatched id -> 400")
+
+            # Reload endpoint is gone.
             r = c.post("/api/lorebook/reload")
-            if ids:
-                assert r.status_code == 400, r.text
-                detail = r.json()["detail"]
-                assert detail["error"] == "invalid lorebook"
-                assert any("duplicate" in e for e in detail["errors"]), detail
-                still = c.get("/api/lorebook").json()
-                assert {e["id"] for e in still["entries"]} == ids
-                print("ok  invalid reload returns 400 and leaves the previous book intact")
-            else:
-                # No entries to duplicate against; reload should just succeed with 1 entry.
-                assert r.status_code == 200
-                print("ok  reload with no prior entries loaded the new file (no duplicate possible)")
+            assert r.status_code == 404, r.text
+            print("ok  POST /api/lorebook/reload is removed (404)")
+
+            r = c.delete(f"/api/lorebook/entries/{entry_id}")
+            assert r.status_code == 204, r.text
+            r = c.delete(f"/api/lorebook/entries/{entry_id}")
+            assert r.status_code == 404, r.text
+            print("ok  DELETE idempotent -> 204 then 404")
+
+            # In-memory refresh after delete.
+            assert entry_id not in app.state.lorebook.entries
+            print("ok  app.state.lorebook refreshed after DELETE")
         finally:
-            if bad.exists():
-                bad.unlink()
+            _cleanup_verify_rows()
+
+
+def verify_html_pages() -> None:
+    print()
+    print("--- HTML pages ---")
+    from api.app import app
+
+    with TestClient(app) as c:
+        r = c.get("/lorebook")
+        assert r.status_code == 200
+        assert "<h1>Lorebook</h1>" in r.text
+        print("ok  GET /lorebook renders list page")
+
+        r = c.get("/lorebook/new")
+        assert r.status_code == 200
+        for frag in ['x-data="lorebookForm(', 'id="roster"'.replace('id="roster"', 'secondary_logic'), 'visibility']:
+            assert frag in r.text, frag
+        print("ok  GET /lorebook/new renders the form")
+
+        r = c.get("/lorebook/__does_not_exist__/edit")
+        assert r.status_code == 404
+        print("ok  GET /lorebook/{missing}/edit -> 404")
 
 
 def main() -> int:
     verify_normalizer()
     verify_matcher()
-    verify_loader_happy_path()
-    verify_loader_errors()
     verify_activation()
-    verify_api()
+    verify_repo_roundtrip()
+    verify_settings_roundtrip()
+    verify_validation()
+    verify_api_crud()
+    verify_html_pages()
     print()
     print("all lorebook verifications passed")
     return 0

@@ -1,10 +1,16 @@
-"""ModelFallbackMiddleware with structured logging per attempt.
+"""ModelFallbackMiddleware with structured logging + per-model cooldown awareness.
 
-Only the primary + fallback switching behavior is reused from langchain's
-ModelFallbackMiddleware; the sanitizer step (Anthropic cache marker stripping)
-is skipped because every model in this project is Gemini. If a non-Gemini
-provider is ever added, this needs to inherit the parent's
-_sanitize_request_for_fallback call.
+The middleware builds a unified candidate list `[primary, *fallbacks]` on every
+call. Models currently on cooldown are skipped; the first successful call wins.
+Exceptions classified as rate-limit / quota errors by `cooldown.is_quota_error`
+trigger a cooldown via `cooldown.start_cooldown`, so subsequent requests go
+straight to the next non-cooled candidate.
+
+The sanitizer step from langchain's `ModelFallbackMiddleware` (Anthropic cache
+marker stripping) is skipped because every model in this project is Gemini or
+OpenAI-compatible via OpenRouter. If a non-Gemini / non-OpenRouter provider is
+ever added, this should inherit the parent's `_sanitize_request_for_fallback`
+call.
 """
 import logging
 from typing import Callable
@@ -13,7 +19,10 @@ from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResp
 from langchain_core.language_models.chat_models import BaseChatModel
 from langgraph.errors import GraphBubbleUp
 
+from agent.core.cooldown import is_on_cooldown, is_quota_error, spec_for, start_cooldown
+
 logger = logging.getLogger("pywf.fallback")
+cooldown_logger = logging.getLogger("pywf.cooldown")
 
 
 class LoggingModelFallbackMiddleware(AgentMiddleware):
@@ -29,37 +38,56 @@ class LoggingModelFallbackMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        last_exc: Exception | None = None
-        try:
-            return handler(request)
-        except GraphBubbleUp:
-            raise
-        except Exception as e:
-            logger.warning(
-                "fallback/%s: primary failed: %s: %s",
-                self.character_id, type(e).__name__, e,
-            )
-            last_exc = e
+        candidates: list[tuple[str, BaseChatModel]] = [("primary", request.model)]
+        candidates.extend((f"fallback[{i}]", m) for i, m in enumerate(self.fallbacks))
 
-        for i, model in enumerate(self.fallbacks):
-            try:
-                logger.info(
-                    "fallback/%s: trying fallback[%d] %s",
-                    self.character_id, i, type(model).__name__,
+        last_exc: Exception | None = None
+        tried = 0
+
+        for label, model in candidates:
+            if is_on_cooldown(model):
+                cooldown_logger.info(
+                    "cooldown/%s: skipping %s (%s)",
+                    self.character_id, label, spec_for(model) or type(model).__name__,
                 )
-                return handler(request.override(model=model))
+                continue
+
+            tried += 1
+            attempt = request if label == "primary" else request.override(model=model)
+            if label != "primary":
+                logger.info(
+                    "fallback/%s: trying %s %s",
+                    self.character_id, label, type(model).__name__,
+                )
+
+            try:
+                return handler(attempt)
             except GraphBubbleUp:
                 raise
             except Exception as e:
-                logger.warning(
-                    "fallback/%s: fallback[%d] failed: %s: %s",
-                    self.character_id, i, type(e).__name__, e,
-                )
+                if is_quota_error(e):
+                    seconds = start_cooldown(model, e)
+                    logger.warning(
+                        "fallback/%s: %s hit quota (%s); cooling %ss",
+                        self.character_id, label, type(e).__name__, seconds,
+                    )
+                else:
+                    logger.warning(
+                        "fallback/%s: %s failed: %s: %s",
+                        self.character_id, label, type(e).__name__, e,
+                    )
                 last_exc = e
 
+        if tried == 0:
+            cooldown_logger.error(
+                "cooldown/%s: all %d candidate(s) on cooldown",
+                self.character_id, len(candidates),
+            )
+            raise RuntimeError("all models on cooldown")
+
         logger.error(
-            "fallback/%s: exhausted %d model(s)",
-            self.character_id, len(self.fallbacks) + 1,
+            "fallback/%s: exhausted %d candidate(s) (%d tried)",
+            self.character_id, len(candidates), tried,
         )
         assert last_exc is not None
         raise last_exc

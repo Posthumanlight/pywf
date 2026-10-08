@@ -6,7 +6,17 @@ import html
 import json
 from typing import Any
 
-from data.srd_catalog import CLASSES, FEATS, SPECIES, SPELLS, SUBCLASSES
+from data.srd_catalog import (
+    CLASS_CANTRIPS,
+    CLASS_FEATURES,
+    CLASSES,
+    FEATS,
+    SPECIES,
+    SPECIES_FEATURES,
+    SPELLS,
+    SUBCLASS_FEATURES,
+    SUBCLASSES,
+)
 
 
 _HEAD = """<meta charset="utf-8">
@@ -30,6 +40,11 @@ _HEAD = """<meta charset="utf-8">
  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .5em; }
  .row { display: flex; gap: .5em; align-items: center; margin-bottom: .3em; }
  .row input, .row select { flex: 1; padding: .3em; font: inherit; }
+ .row-with-action { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .75em; align-items: center; margin-bottom: .3em; }
+ .row-with-action .inputs { display: flex; gap: .5em; align-items: center; min-width: 0; }
+ .row-with-action .inputs > * { min-width: 0; }
+ .row-with-action .inputs input, .row-with-action .inputs select { flex: 1; padding: .3em; font: inherit; }
+ .action-side { justify-self: end; min-width: 8em; padding: .3em .8em; }
  .chip { display: inline-block; background: #eef; padding: .15em .5em; border-radius: 10px; margin: 0 .3em .3em 0; }
  .chip button { background: none; border: none; margin-left: .3em; cursor: pointer; color: #a00; }
  input, textarea, select { font: inherit; padding: .3em; }
@@ -92,6 +107,8 @@ _HEAD = """<meta charset="utf-8">
   .srd-column { display: none; }
   .srd-fab { display: flex; }
   .srd-overlay { display: flex; }
+  .row-with-action { grid-template-columns: 1fr; }
+  .action-side { justify-self: stretch; min-width: 0; }
  }
 </style>"""
 
@@ -104,6 +121,7 @@ _NAV = """<nav>
  <a href="/">Home</a>
  <a href="/chat">Chat</a>
  <a href="/characters">Characters</a>
+ <a href="/lorebook">Lorebook</a>
  <a href="/memory">Memory</a>
 </nav>"""
 
@@ -112,6 +130,7 @@ def landing_page(
     party: list[dict[str, str]],
     character_count: int,
     memory: list[dict[str, Any]],
+    lorebook_count: int = 0,
 ) -> str:
     roster = ", ".join(f"{_esc(p['name'])} (@{_esc(p['id'])})" for p in party) or "<em>empty</em>"
     mem_line = (
@@ -133,6 +152,14 @@ def landing_page(
   <div class="actions">
    <a class="btn" href="/characters/new">+ New character</a>
    <a href="/characters">View all</a>
+  </div>
+ </section>
+ <section class="card">
+  <h2>Lorebook</h2>
+  <div class="snapshot">{lorebook_count} entry(ies) authored.</div>
+  <div class="actions">
+   <a class="btn" href="/lorebook/new">+ New entry</a>
+   <a href="/lorebook">View all</a>
   </div>
  </section>
  <section class="card">
@@ -384,8 +411,15 @@ def _datalist(id_: str, options: list[str]) -> str:
 
 def _srd_datalists_html() -> str:
     spells_json = json.dumps(SPELLS).replace("</", "<\\/")
+    progressions_json = json.dumps({
+        "class_features": CLASS_FEATURES,
+        "subclass_features": SUBCLASS_FEATURES,
+        "species_features": SPECIES_FEATURES,
+        "class_cantrips": CLASS_CANTRIPS,
+    }).replace("</", "<\\/")
     parts = [
         f"<script>window.SRD_SPELLS = {spells_json};</script>",
+        f"<script>window.SRD_PROGRESSIONS = {progressions_json};</script>",
         _datalist("srd-classes", CLASSES),
         _datalist("srd-species", SPECIES),
         _datalist("srd-feats", FEATS),
@@ -421,10 +455,18 @@ def character_form_page(mode: str, initial: dict[str, Any] | None = None) -> str
   <div class="grid">
    <div><label>id (slug, lowercase)</label><input type="text" x-model="form.id" :readonly="mode === 'edit'"></div>
    <div><label>name</label><input type="text" x-model="form.name"></div>
-   <div><label>species</label><input type="text" x-model="form.species" list="srd-species" @change="showSrd('species', form.species)"></div>
    <div><label>background</label><input type="text" x-model="form.background"></div>
    <div><label>alignment</label><input type="text" x-model="form.alignment"></div>
    <div><label>origin feat</label><input type="text" x-model="form.origin_feat"></div>
+  </div>
+  <div class="row-with-action" style="margin-top: .5em;">
+   <div class="inputs">
+    <label style="margin: 0 .5em 0 0; white-space: nowrap;">species</label>
+    <input type="text" x-model="form.species" list="srd-species"
+           @focus="$el.dataset.prev = form.species"
+           @change="onSpeciesChange($el.dataset.prev, form.species); $el.dataset.prev = form.species; showSrd('species', form.species)">
+   </div>
+   <button type="button" class="action-side" @click="addSpeciesFeatures()">+ features</button>
   </div>
  </fieldset>
 
@@ -450,11 +492,18 @@ def character_form_page(mode: str, initial: dict[str, Any] | None = None) -> str
 
  <fieldset><legend>Classes</legend>
   <template x-for="(c, i) in form.classes" :key="i">
-   <div class="row">
-    <input placeholder="class (e.g. Fighter)" x-model="c.class" list="srd-classes" @change="showSrd('class', c.class)">
-    <input type="number" placeholder="level" x-model.number="c.level" style="max-width: 6em;">
-    <input placeholder="subclass (optional)" x-model="c.subclass" :list="'srd-subclass-' + (c.class || '')" @change="showSrd('subclass', c.subclass)">
-    <button type="button" class="btn-danger" @click="form.classes.splice(i, 1)">x</button>
+   <div class="row-with-action">
+    <div class="inputs">
+     <input placeholder="class (e.g. Fighter)" x-model="c.class" list="srd-classes"
+            @focus="$el.dataset.prev = c.class"
+            @change="onClassChange($el.dataset.prev, c.class); $el.dataset.prev = c.class; showSrd('class', c.class)">
+     <input type="number" placeholder="level" x-model.number="c.level" style="max-width: 6em; flex: 0 0 6em;">
+     <input placeholder="subclass (optional)" x-model="c.subclass" :list="'srd-subclass-' + (c.class || '')"
+            @focus="$el.dataset.prev = c.subclass || ''"
+            @change="onSubclassChange(c.class, $el.dataset.prev, c.subclass || ''); $el.dataset.prev = c.subclass || ''; showSrd('subclass', c.subclass)">
+     <button type="button" class="btn-danger" @click="onClassChange(c.class, ''); form.classes.splice(i, 1)" style="flex: 0 0 auto;">x</button>
+    </div>
+    <button type="button" class="action-side" @click="addClassFeatures(c)" :disabled="!c.class">+ features</button>
    </div>
   </template>
   <button type="button" @click="form.classes.push({{class: '', level: 1, subclass: null}})">+ Add class</button>
@@ -536,6 +585,7 @@ def character_form_page(mode: str, initial: dict[str, Any] | None = None) -> str
    </div>
   </template>
   <button type="button" @click="form.spells.push({{name: '', level: 0, prepared: false, always_prepared: ''}})">+ Add spell</button>
+  <button type="button" @click="addClassCantrips()">+ Class cantrips</button>
  </fieldset>
 
  <fieldset><legend>Proficiencies, languages, conditions</legend>
@@ -678,6 +728,101 @@ function characterForm(initial, mode) {{
       this.form[field][k] = v;
       this.form[field] = {{...this.form[field]}};
     }},
+    _pushFeature(name, source) {{
+      // Dedup by (name, class) or (name, species). The source is {{class: ..., species: ...}}.
+      const match = this.form.features.find(f =>
+        f.name === name && (f.class || '') === (source.class || '') && (f.species || '') === (source.species || '')
+      );
+      if (match) return false;
+      this.form.features.push({{
+        name,
+        class: source.class || '',
+        species: source.species || '',
+        uses_remaining: null,
+        uses_max: null,
+        recharge: '',
+      }});
+      return true;
+    }},
+    addClassFeatures(row) {{
+      const cls = (row && row.class || '').trim();
+      if (!cls) return;
+      const level = Math.max(1, parseInt(row.level, 10) || 1);
+      const prog = window.SRD_PROGRESSIONS || {{}};
+      const byLevel = (prog.class_features || {{}})[cls] || {{}};
+      let added = 0;
+      for (let L = 1; L <= level; L++) {{
+        for (const name of (byLevel[L] || [])) {{
+          if (this._pushFeature(name, {{class: cls}})) added++;
+        }}
+      }}
+      const sub = (row.subclass || '').trim();
+      if (sub) {{
+        const subKey = cls + ': ' + sub;
+        const subByLevel = (prog.subclass_features || {{}})[subKey] || {{}};
+        for (let L = 1; L <= level; L++) {{
+          for (const name of (subByLevel[L] || [])) {{
+            if (this._pushFeature(name + ' (' + sub + ')', {{class: cls}})) added++;
+          }}
+        }}
+      }}
+      if (!added) alert('No new features to add for ' + cls + ' ' + level + '.');
+    }},
+    addSpeciesFeatures() {{
+      const sp = (this.form.species || '').trim();
+      if (!sp) return;
+      const prog = window.SRD_PROGRESSIONS || {{}};
+      const list = (prog.species_features || {{}})[sp] || [];
+      let added = 0;
+      for (const name of list) {{
+        if (this._pushFeature(name, {{species: sp}})) added++;
+      }}
+      if (!added) alert('No new species features to add for ' + sp + '.');
+    }},
+    addClassCantrips() {{
+      const prog = window.SRD_PROGRESSIONS || {{}};
+      const cantrips = prog.class_cantrips || {{}};
+      const seen = new Set(this.form.spells.map(s => (s.name || '') + '|' + (s.always_prepared || '')));
+      let added = 0;
+      const classes = (this.form.classes || []).map(c => (c.class || '').trim()).filter(Boolean);
+      const uniqClasses = Array.from(new Set(classes));
+      for (const cls of uniqClasses) {{
+        for (const name of (cantrips[cls] || [])) {{
+          const key = name + '|' + cls;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          this.form.spells.push({{name, level: 0, prepared: false, always_prepared: cls}});
+          added++;
+        }}
+      }}
+      if (!added) alert(uniqClasses.length ? 'No new cantrips to add.' : 'Pick at least one class first.');
+    }},
+    onSpeciesChange(prev, next) {{
+      if (!prev || prev === next) return;
+      const matched = this.form.features.filter(f => f.species === prev);
+      if (!matched.length) return;
+      if (confirm('Remove ' + matched.length + ' feature(s) sourced from ' + prev + '?')) {{
+        this.form.features = this.form.features.filter(f => f.species !== prev);
+      }}
+    }},
+    onClassChange(prev, next) {{
+      if (!prev || prev === next) return;
+      const matched = this.form.features.filter(f => f.class === prev);
+      if (!matched.length) return;
+      if (confirm('Remove ' + matched.length + ' feature(s) sourced from ' + prev + '?')) {{
+        this.form.features = this.form.features.filter(f => f.class !== prev);
+        this.form.spells = this.form.spells.filter(s => s.always_prepared !== prev);
+      }}
+    }},
+    onSubclassChange(cls, prev, next) {{
+      if (!prev || prev === next || !cls) return;
+      const tag = ' (' + prev + ')';
+      const matched = this.form.features.filter(f => f.class === cls && f.name.endsWith(tag));
+      if (!matched.length) return;
+      if (confirm('Remove ' + matched.length + ' feature(s) sourced from subclass ' + prev + '?')) {{
+        this.form.features = this.form.features.filter(f => !(f.class === cls && f.name.endsWith(tag)));
+      }}
+    }},
     async submit() {{
       this.error = null;
       this.submitting = true;
@@ -724,6 +869,239 @@ window.spellPicker = function(row, onPick) {{
     }},
   }};
 }};
+</script>
+"""
+    return _layout(body)
+
+
+_LOREBOOK_EMPTY = {
+    "id": "",
+    "title": "",
+    "keys": [],
+    "key_regex": [],
+    "secondary_keys": [],
+    "secondary_logic": "and_any",
+    "constant": False,
+    "priority": 0,
+    "position": "after",
+    "no_recurse_into": False,
+    "not_triggerable_by_recursion": False,
+    "visibility": "global",
+    "content": "",
+    "token_count": 0,
+}
+
+
+def lorebook_list_page(items: list[dict[str, Any]]) -> str:
+    rows = "\n".join(
+        f"""<tr id="lrow-{_esc(i['id'])}">
+ <td>{_esc(i['id'])}</td>
+ <td>{_esc(i['title'])}</td>
+ <td>{_esc(i['keys_count'])}</td>
+ <td>{_esc(i['position'])}</td>
+ <td>{_esc(i['priority'])}</td>
+ <td>{'yes' if i['constant'] else ''}</td>
+ <td>{_esc(i['token_count'])}</td>
+ <td class="actions">
+  <a href="/lorebook/{_esc(i['id'])}/edit">Edit</a>
+  <button class="btn btn-danger"
+          hx-delete="/api/lorebook/entries/{_esc(i['id'])}"
+          hx-target="#lrow-{_esc(i['id'])}"
+          hx-swap="delete"
+          hx-confirm="Delete {_esc(i['id'])}?">Delete</button>
+ </td>
+</tr>"""
+        for i in items
+    )
+    if not items:
+        rows = '<tr><td colspan="8"><em>No lorebook entries yet.</em></td></tr>'
+    body = f"""{_NAV}
+<h1>Lorebook</h1>
+<p><a class="btn" href="/lorebook/new">+ New entry</a></p>
+<table>
+ <thead><tr>
+  <th>id</th><th>title</th><th>keys</th><th>position</th><th>priority</th><th>constant</th><th>tokens</th><th></th>
+ </tr></thead>
+ <tbody>{rows}</tbody>
+</table>"""
+    return _layout(body)
+
+
+def lorebook_form_page(
+    mode: str,
+    initial: dict[str, Any] | None = None,
+    character_ids: list[str] | None = None,
+) -> str:
+    assert mode in ("new", "edit")
+    data = {**_LOREBOOK_EMPTY, **(initial or {})}
+    # Normalize visibility for the form: track mode + specific list separately.
+    vis = data.get("visibility", "global")
+    if isinstance(vis, list):
+        data["_visibility_mode"] = "specific"
+        data["_visibility_list"] = list(vis)
+    else:
+        data["_visibility_mode"] = vis if vis in ("global", "party") else "global"
+        data["_visibility_list"] = []
+    data.pop("token_count", None)
+
+    data_attr = html.escape(json.dumps(data), quote=True)
+    mode_attr = html.escape(json.dumps(mode), quote=True)
+    chars_attr = html.escape(json.dumps(character_ids or []), quote=True)
+
+    body = f"""{_NAV}
+<div x-data="lorebookForm({data_attr}, {mode_attr}, {chars_attr})" x-cloak>
+<h1>{'Edit lorebook entry' if mode == 'edit' else 'New lorebook entry'}</h1>
+
+<template x-if="error">
+ <div class="error" x-text="error"></div>
+</template>
+
+<fieldset><legend>Identity</legend>
+ <div class="grid">
+  <div><label>id (slug)</label><input type="text" x-model="form.id" :readonly="mode === 'edit'"></div>
+  <div><label>title</label><input type="text" x-model="form.title"></div>
+ </div>
+</fieldset>
+
+<fieldset><legend>Keys</legend>
+ <label>plain keys</label>
+ <div>
+  <template x-for="(k, i) in form.keys" :key="i">
+   <span class="chip" x-text="k"><button type="button" @click="form.keys.splice(i, 1)">x</button></span>
+  </template>
+ </div>
+ <div class="row">
+  <input placeholder="add key"
+         @keydown.enter.prevent="if($event.target.value.trim()){{form.keys.push($event.target.value.trim()); $event.target.value='';}}">
+ </div>
+
+ <label>regex keys</label>
+ <div>
+  <template x-for="(k, i) in form.key_regex" :key="i">
+   <span class="chip" x-text="k"><button type="button" @click="form.key_regex.splice(i, 1)">x</button></span>
+  </template>
+ </div>
+ <div class="row">
+  <input placeholder="add regex"
+         @keydown.enter.prevent="if($event.target.value.trim()){{form.key_regex.push($event.target.value.trim()); $event.target.value='';}}">
+ </div>
+
+ <label>secondary keys</label>
+ <div>
+  <template x-for="(k, i) in form.secondary_keys" :key="i">
+   <span class="chip" x-text="k"><button type="button" @click="form.secondary_keys.splice(i, 1)">x</button></span>
+  </template>
+ </div>
+ <div class="row">
+  <input placeholder="add secondary key"
+         @keydown.enter.prevent="if($event.target.value.trim()){{form.secondary_keys.push($event.target.value.trim()); $event.target.value='';}}">
+ </div>
+
+ <div class="row">
+  <label class="inline">secondary logic
+   <select x-model="form.secondary_logic">
+    <option value="and_any">and_any</option>
+    <option value="and_all">and_all</option>
+    <option value="not">not</option>
+   </select>
+  </label>
+ </div>
+</fieldset>
+
+<fieldset><legend>Behavior</legend>
+ <div class="grid">
+  <div><label>priority</label><input type="number" x-model.number="form.priority"></div>
+  <div><label>position</label>
+   <select x-model="form.position">
+    <option value="before">before</option>
+    <option value="after">after</option>
+   </select>
+  </div>
+ </div>
+ <div class="row">
+  <label class="inline"><input type="checkbox" x-model="form.constant"> constant (always active)</label>
+  <label class="inline"><input type="checkbox" x-model="form.no_recurse_into"> no_recurse_into</label>
+  <label class="inline"><input type="checkbox" x-model="form.not_triggerable_by_recursion"> not_triggerable_by_recursion</label>
+ </div>
+</fieldset>
+
+<fieldset><legend>Visibility</legend>
+ <div class="row">
+  <label class="inline"><input type="radio" value="global" x-model="form._visibility_mode"> global</label>
+  <label class="inline"><input type="radio" value="party" x-model="form._visibility_mode"> party</label>
+  <label class="inline"><input type="radio" value="specific" x-model="form._visibility_mode"> specific characters</label>
+ </div>
+ <template x-if="form._visibility_mode === 'specific'">
+  <div>
+   <template x-for="cid in characterIds" :key="cid">
+    <label class="inline"><input type="checkbox" :value="cid" x-model="form._visibility_list"> <span x-text="cid"></span></label>
+   </template>
+   <div x-show="!characterIds.length"><em>No characters in the DB; create one first.</em></div>
+  </div>
+ </template>
+</fieldset>
+
+<fieldset><legend>Content</legend>
+ <textarea x-model="form.content" style="min-height: 10em;"></textarea>
+</fieldset>
+
+<div class="row">
+ <button type="button" @click="submit()" x-text="submitting ? 'Saving…' : (mode === 'edit' ? 'Save changes' : 'Create entry')"></button>
+ <a href="/lorebook">Cancel</a>
+</div>
+</div>
+
+<script>
+function lorebookForm(initial, mode, characterIds) {{
+  return {{
+    mode: mode,
+    form: initial,
+    characterIds: characterIds,
+    error: null,
+    submitting: false,
+    _buildVisibility() {{
+      const m = this.form._visibility_mode;
+      if (m === 'specific') return (this.form._visibility_list || []).slice();
+      return m;
+    }},
+    async submit() {{
+      this.error = null;
+      this.submitting = true;
+      try {{
+        const payload = {{
+          id: this.form.id,
+          title: this.form.title,
+          keys: this.form.keys,
+          key_regex: this.form.key_regex,
+          secondary_keys: this.form.secondary_keys,
+          secondary_logic: this.form.secondary_logic,
+          constant: this.form.constant,
+          priority: this.form.priority,
+          position: this.form.position,
+          no_recurse_into: this.form.no_recurse_into,
+          not_triggerable_by_recursion: this.form.not_triggerable_by_recursion,
+          visibility: this._buildVisibility(),
+          content: this.form.content,
+        }};
+        const url = this.mode === 'edit'
+          ? '/api/lorebook/entries/' + encodeURIComponent(this.form.id)
+          : '/api/lorebook/entries';
+        const method = this.mode === 'edit' ? 'PUT' : 'POST';
+        const r = await fetch(url, {{
+          method,
+          headers: {{'Content-Type': 'application/json'}},
+          body: JSON.stringify(payload),
+        }});
+        if (r.ok) {{ window.location.href = '/lorebook'; return; }}
+        this.error = 'HTTP ' + r.status + ': ' + await r.text();
+      }} catch (e) {{
+        this.error = String(e);
+      }} finally {{
+        this.submitting = false;
+      }}
+    }},
+  }};
+}}
 </script>
 """
     return _layout(body)

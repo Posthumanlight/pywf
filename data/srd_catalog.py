@@ -8,6 +8,11 @@ Collisions between homebrew and SRD raise `ValueError` at import time.
 Also captures the body (prose) of each entry into `BODIES`, keyed by
 `(category, display_name)` where `category` is one of
 `"class" | "subclass" | "species" | "feat" | "spell"`.
+
+Three progression structures (`CLASS_FEATURES`, `SUBCLASS_FEATURES`,
+`SPECIES_FEATURES`) are extracted from the same markdown pass; they power the
+"Add features" buttons on the character form. `CLASS_CANTRIPS` is derived from
+the existing SPELLS list.
 """
 import re
 from pathlib import Path
@@ -22,6 +27,8 @@ _SPELL_META_RE = re.compile(
     r"^_(?:Level (?P<level>\d+) )?(?P<school>[A-Za-z]+)(?P<cantrip> Cantrip)?(?: \((?P<classes>[^)]+)\))?_\s*$"
 )
 _SUBCLASS_RE = re.compile(r"^### (?P<class>\S[^:]*?) Subclass:\s+(?P<name>.+?)\s*$")
+_CLASS_FEATURE_RE = re.compile(r"^#### Level (?P<level>\d+): (?P<name>.+?)\s*$")
+_SPECIES_FEATURE_RE = re.compile(r"^_\*\*(?P<name>.+?)\.\*\*_")
 
 
 def _heading_depth(line: str) -> int:
@@ -36,9 +43,62 @@ def _heading_depth(line: str) -> int:
     return depth
 
 
+def _extract_class_features(body_lines: list[str], class_name: str) -> dict[int, list[str]]:
+    """Pull `#### Level N: Name` from the `### <Class> Class Features` section only.
+
+    Guard against features living inside a `### <Class> Subclass: ...` section
+    further down the body — those are the subclass's, not the class's.
+    """
+    target = f"### {class_name} Class Features"
+    in_section = False
+    section_depth = 0
+    out: dict[int, list[str]] = {}
+    for raw in body_lines:
+        line = raw.rstrip()
+        depth = _heading_depth(line)
+        if line == target:
+            in_section = True
+            section_depth = depth
+            continue
+        if in_section and depth and depth <= section_depth:
+            break
+        if in_section:
+            m = _CLASS_FEATURE_RE.match(line)
+            if m:
+                level = int(m.group("level"))
+                out.setdefault(level, []).append(m.group("name").strip())
+    return out
+
+
+def _extract_subclass_features(body_lines: list[str]) -> dict[int, list[str]]:
+    """Pull `#### Level N: Name` from a subclass body (the whole body IS the feature list)."""
+    out: dict[int, list[str]] = {}
+    for raw in body_lines:
+        m = _CLASS_FEATURE_RE.match(raw.rstrip())
+        if m:
+            level = int(m.group("level"))
+            out.setdefault(level, []).append(m.group("name").strip())
+    return out
+
+
+def _extract_species_features(body_lines: list[str]) -> list[str]:
+    """Pull `_**Name.**_` from a species body."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in body_lines:
+        m = _SPECIES_FEATURE_RE.match(raw.rstrip())
+        if m:
+            name = m.group("name").strip()
+            if name not in seen:
+                seen.add(name)
+                out.append(name)
+    return out
+
+
 def _parse_file(path: Path) -> dict:
     """Parse one SRD-formatted markdown file. Returns a dict with keys
-    'classes', 'species', 'feats', 'subclasses', 'spells', 'bodies'.
+    'classes', 'species', 'feats', 'subclasses', 'spells', 'bodies',
+    'class_features', 'subclass_features', 'species_features'.
     Returns empty collections if the file does not exist or is empty.
     """
     empty: dict = {
@@ -48,6 +108,9 @@ def _parse_file(path: Path) -> dict:
         "subclasses": {},
         "spells": [],
         "bodies": {},
+        "class_features": {},
+        "subclass_features": {},
+        "species_features": {},
     }
     if not path.exists():
         return empty
@@ -59,10 +122,10 @@ def _parse_file(path: Path) -> dict:
     feats: list[str] = []
     subclasses: dict[str, list[str]] = {}
     spells: list[dict] = []
+    subclass_parent: dict[str, str] = {}
 
     # (category, name, start_line_idx, depth)
     entries: list[tuple[str, str, int, int]] = []
-    # (line_idx, depth), already sorted because we walk in order
     headings: list[tuple[int, int]] = []
 
     h1 = h2 = h3 = ""
@@ -101,6 +164,7 @@ def _parse_file(path: Path) -> dict:
             if m and h1 == "Classes" and current_class:
                 subname = m.group("name").strip()
                 subclasses.setdefault(current_class, []).append(subname)
+                subclass_parent[subname] = current_class
                 entries.append(("subclass", subname, i, 3))
                 continue
             if h2 == "Spell Descriptions":
@@ -137,17 +201,29 @@ def _parse_file(path: Path) -> dict:
                 pending_spell = None
                 pending_spell_start = -1
 
-    # Compute body ranges: for each entry, find the first subsequent heading
-    # whose depth is <= entry depth; the body is lines[start:end].
+    # Compute body ranges + feature extraction in a single pass over entries.
     bodies: dict[tuple[str, str], str] = {}
+    class_features: dict[str, dict[int, list[str]]] = {}
+    subclass_features: dict[str, dict[int, list[str]]] = {}
+    species_features: dict[str, list[str]] = {}
+
     for cat, name, start, depth in entries:
         end = len(lines)
         for h_idx, h_depth in headings:
             if h_idx > start and h_depth <= depth:
                 end = h_idx
                 break
-        body_text = "\n".join(lines[start:end]).strip("\n")
-        bodies[(cat, name)] = body_text
+        body_lines = lines[start:end]
+        bodies[(cat, name)] = "\n".join(body_lines).strip("\n")
+
+        if cat == "class":
+            class_features[name] = _extract_class_features(body_lines, name)
+        elif cat == "subclass":
+            parent = subclass_parent.get(name, "")
+            key = f"{parent}: {name}" if parent else name
+            subclass_features[key] = _extract_subclass_features(body_lines)
+        elif cat == "species":
+            species_features[name] = _extract_species_features(body_lines)
 
     return {
         "classes": classes,
@@ -156,6 +232,9 @@ def _parse_file(path: Path) -> dict:
         "subclasses": subclasses,
         "spells": spells,
         "bodies": bodies,
+        "class_features": class_features,
+        "subclass_features": subclass_features,
+        "species_features": species_features,
     }
 
 
@@ -204,15 +283,33 @@ def _merge(core: dict, hb: dict) -> dict:
     merged_spells = sorted(core["spells"] + hb_spells_suffixed, key=lambda s: s["name"])
 
     # Bodies: SRD keys stay raw; homebrew keys get the display suffix.
-    # A homebrew `## <SRD class>` is parent context — its body is empty by
-    # construction (no following siblings before the next class heading);
-    # we skip it anyway so it doesn't shadow the SRD body.
     merged_bodies: dict[tuple[str, str], str] = dict(core["bodies"])
     for (cat, name), body in hb["bodies"].items():
         if cat == "class" and name in core_class_set:
-            continue  # parent-context, SRD body already present
+            continue
         display_name = name + sfx
         merged_bodies[(cat, display_name)] = body
+
+    # Class features: homebrew's parent-context classes have empty extraction, skip them;
+    # truly-new homebrew classes get the suffix.
+    merged_class_features: dict[str, dict[int, list[str]]] = dict(core["class_features"])
+    for name, feats_by_level in hb["class_features"].items():
+        if not feats_by_level and name in core_class_set:
+            continue
+        key = name + sfx if name in hb_new_class_set else name
+        merged_class_features[key] = feats_by_level
+
+    # Subclass features are keyed by "<Class>: <Subclass>" with class+subclass potentially suffixed.
+    merged_subclass_features: dict[str, dict[int, list[str]]] = dict(core["subclass_features"])
+    for key, feats_by_level in hb["subclass_features"].items():
+        parent, _, subname = key.partition(": ")
+        parent_key = parent + sfx if parent in hb_new_class_set else parent
+        new_key = f"{parent_key}: {subname + sfx}"
+        merged_subclass_features[new_key] = feats_by_level
+
+    merged_species_features: dict[str, list[str]] = dict(core["species_features"])
+    for name, feats in hb["species_features"].items():
+        merged_species_features[name + sfx] = feats
 
     return {
         "classes": merged_classes,
@@ -221,6 +318,9 @@ def _merge(core: dict, hb: dict) -> dict:
         "subclasses": merged_subclasses,
         "spells": merged_spells,
         "bodies": merged_bodies,
+        "class_features": merged_class_features,
+        "subclass_features": merged_subclass_features,
+        "species_features": merged_species_features,
     }
 
 
@@ -234,6 +334,25 @@ FEATS = _merged["feats"]
 SUBCLASSES = _merged["subclasses"]
 SPELLS = _merged["spells"]
 BODIES = _merged["bodies"]
+CLASS_FEATURES = _merged["class_features"]
+SUBCLASS_FEATURES = _merged["subclass_features"]
+SPECIES_FEATURES = _merged["species_features"]
+
+
+def _build_class_cantrips(spells: list[dict]) -> dict[str, list[str]]:
+    """`CLASS_CANTRIPS[class]` = sorted cantrip names available to that class."""
+    out: dict[str, list[str]] = {}
+    for spell in spells:
+        if spell.get("level") != 0:
+            continue
+        for cls in spell.get("classes") or []:
+            out.setdefault(cls, []).append(spell["name"])
+    for cls in out:
+        out[cls] = sorted(set(out[cls]))
+    return out
+
+
+CLASS_CANTRIPS: dict[str, list[str]] = _build_class_cantrips(SPELLS)
 
 
 def get_body(category: str, name: str) -> str | None:

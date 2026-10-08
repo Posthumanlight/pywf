@@ -14,11 +14,21 @@ SAMPLE = """\
 
 ## Blood Hunter
 
+### Blood Hunter Class Features
+
+#### Level 1: Blood Mark
+
+The Blood Hunter marks a target with blood magic.
+
 ### Blood Hunter Subclass: Order of the Lycan
 
 ## Fighter
 
 ### Fighter Subclass: Blade Master
+
+#### Level 3: Precision Edge
+
+The Blade Master gains a precision edge on weapon rolls.
 
 # Character Origins
 
@@ -27,6 +37,8 @@ SAMPLE = """\
 ### Species Descriptions
 
 #### Shardkin
+
+_**Crystal Skin.**_ You have resistance to bludgeoning damage.
 
 # Feats
 
@@ -97,6 +109,20 @@ def main() -> int:
         assert mod.SPECIES == sorted(mod.SPECIES)
         print("ok  homebrew entries merged with ' (Homebrew)' suffix")
         print(f"    classes now {len(mod.CLASSES)}, species {len(mod.SPECIES)}, feats {len(mod.FEATS)}, spells {len(mod.SPELLS)}")
+
+        print()
+        print("--- homebrew progressions merged ---")
+        bh_feats = mod.CLASS_FEATURES.get("Blood Hunter (Homebrew)") or {}
+        assert "Blood Mark" in bh_feats.get(1, []), bh_feats
+        print("ok  homebrew class features surfaced under suffixed key")
+
+        bm_feats = mod.SUBCLASS_FEATURES.get("Fighter: Blade Master (Homebrew)") or {}
+        assert "Precision Edge" in bm_feats.get(3, []), bm_feats
+        print("ok  homebrew subclass features surfaced under '<Parent>: <Sub (Homebrew)>' key")
+
+        shardkin_feats = mod.SPECIES_FEATURES.get("Shardkin (Homebrew)") or []
+        assert "Crystal Skin" in shardkin_feats, shardkin_feats
+        print("ok  homebrew species features surfaced under suffixed key")
 
         print()
         print("--- form page picks up the homebrew entries ---")

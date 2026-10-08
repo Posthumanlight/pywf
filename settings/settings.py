@@ -10,6 +10,7 @@ load_dotenv(Path(__file__).parents[1] / ".env")
 class Settings(BaseSettings):
     BASE_PATH: ClassVar[Path] = Path(__file__).resolve().parents[1]
     gemini_api_key: str
+    openrouter_api_key : str
     character_ids: str
     model_fallbacks: str = ""
     model_timeout_s: int = 30

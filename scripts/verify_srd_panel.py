@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from fastapi.testclient import TestClient
 
 from api.app import app
-from data.srd_catalog import BODIES, get_body
+from data.srd_catalog import BODIES, CLASS_CANTRIPS, CLASS_FEATURES, SPECIES_FEATURES, SUBCLASS_FEATURES, get_body
 
 
 def main() -> int:
@@ -88,6 +88,52 @@ def main() -> int:
         # Old 1240px form-page cap must be gone.
         assert "max-width: 1240px" not in body
         print("ok  sticky panel + markdown + fluid clamp + wider form-page cap all present")
+
+        print()
+        print("--- progressions catalog ---")
+        fighter = CLASS_FEATURES.get("Fighter") or {}
+        assert "Fighting Style" in fighter.get(1, []) and "Second Wind" in fighter.get(1, []) and "Weapon Mastery" in fighter.get(1, [])
+        assert "Action Surge" in fighter.get(2, []) and "Tactical Mind" in fighter.get(2, [])
+        assert any("Subclass" in n or "Martial Archetype" in n for n in fighter.get(3, []))
+        print(f"ok  Fighter class features (levels 1-3) extracted")
+
+        elf = SPECIES_FEATURES.get("Elf") or []
+        assert set(elf) >= {"Darkvision", "Elven Lineage", "Fey Ancestry", "Keen Senses", "Trance"}, elf
+        print(f"ok  Elf species features extracted ({len(elf)})")
+
+        champ = SUBCLASS_FEATURES.get("Fighter: Champion") or {}
+        assert 3 in champ and champ[3], champ
+        print(f"ok  Fighter: Champion subclass features extracted (level 3: {champ[3]})")
+
+        wiz_cantrips = CLASS_CANTRIPS.get("Wizard") or []
+        assert "Fire Bolt" in wiz_cantrips, wiz_cantrips[:5]
+        assert not CLASS_CANTRIPS.get("Fighter"), CLASS_CANTRIPS.get("Fighter")
+        print(f"ok  CLASS_CANTRIPS populated for casters, empty for Fighter")
+
+        print()
+        print("--- form page progressions wiring ---")
+        for frag in [
+            "window.SRD_PROGRESSIONS",
+            "addClassFeatures",
+            "addSpeciesFeatures",
+            "addClassCantrips",
+            "onSpeciesChange",
+            "onClassChange",
+        ]:
+            assert frag in body, f"missing in form page: {frag!r}"
+        print("ok  SRD_PROGRESSIONS + Alpine helpers wired into the form")
+
+        print()
+        print("--- '+ features' button placement ---")
+        for frag in [
+            'class="row-with-action"',
+            'class="action-side"',
+            ".row-with-action { display: grid",
+        ]:
+            assert frag in body, f"missing in form page: {frag!r}"
+        # Species "+ features" button is bound in exactly one spot (the lifted-out row).
+        assert body.count('@click="addSpeciesFeatures()"') == 1
+        print("ok  '+ features' buttons use row-with-action + action-side slot")
 
         print()
         print("--- edit page passes initial data without breaking ---")

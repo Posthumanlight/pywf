@@ -1,0 +1,12 @@
+# Per-model cooldown overrides (seconds) after a rate-limit / quota error.
+# If a model is NOT listed here, the system:
+#   1. tries to parse a retry hint from the error response
+#      (Google's RetryInfo, OpenAI's Retry-After header, or a message pattern)
+#   2. falls back to 8 hours (28800 s) if the response is silent.
+#
+# A model that IS listed uses the value below *regardless* of what the API says.
+# Format: "<provider:model>": seconds
+#
+# Examples (uncomment / tune as needed):
+# google_genai:gemini-3.7-flash: 300
+# openrouter:nvidia/nemotron-3-super-120b-a12b:free: 3600

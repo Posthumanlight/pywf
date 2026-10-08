@@ -1,13 +1,14 @@
 from langchain.agents import create_agent
-from langchain.chat_models import BaseChatModel, init_chat_model
+from langchain.chat_models import BaseChatModel
 
 from agent.core.fallback import LoggingModelFallbackMiddleware
+from agent.core.models import build_chat_model
 from agent.core.memory import MemoryMiddleware
 from agent.tools.get_character_sheet import get_character_sheet
 from agent.tools.roll_dice import roll_dice
 from agent.tools.srd_rules_retriever import rules_srd_retriever
 from data.prompts.system_prompt import build_player_system_prompt
-from lorebook import LorebookMiddleware
+from lorebook.middleware import LorebookMiddleware
 from settings.settings import settings
 
 MODEL = "google_genai:gemini-3.7-flash"
@@ -29,13 +30,13 @@ def build_player_agent(
     # CLI path: no pre-built chat model → build one with a deadline so hung Gemini
     # calls bubble up to the fallback middleware instead of blocking forever.
     if chat_model is None:
-        chat_model = init_chat_model(MODEL, timeout=timeout)
+        chat_model = build_chat_model(MODEL, timeout=timeout)
 
     # Fallbacks: pre-built list wins; else build each from the string list with the same timeout.
     if fallback_models:
         fallbacks: list[BaseChatModel] = fallback_models
     elif model_fallbacks:
-        fallbacks = [init_chat_model(name, timeout=timeout) for name in model_fallbacks]
+        fallbacks = [build_chat_model(name, timeout=timeout) for name in model_fallbacks]
     else:
         fallbacks = []
 
