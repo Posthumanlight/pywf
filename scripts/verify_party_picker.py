@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from fastapi.testclient import TestClient
 
 from api.app import app
+from engine.core import Initiative, parse_dm_line
 
 
 def main() -> int:
@@ -65,9 +66,14 @@ def main() -> int:
                 "/characters/' + encodeURIComponent(t.character_id) + '/edit",
                 'target="_blank"',
                 '/characters/${encodeURIComponent(p.id)}/edit',
+                '<section id="initiative"',
+                'id="init-list"',
+                'id="init-enabled"',
+                'sortablejs',
+                'openInitiative',
             ]:
                 assert frag in body, f"missing in /chat body: {frag!r}"
-            print(f"ok  /chat page contains picker markup ({len(body)} bytes)")
+            print(f"ok  /chat page contains picker + initiative markup ({len(body)} bytes)")
 
             # --- Agent cache reuse: same party selected twice reuses the agent instances.
             print()
@@ -93,6 +99,62 @@ def main() -> int:
                 assert r.status_code == 200
                 assert (singleton[0], frozenset()) in app.state.agent_cache
                 print("ok  distinct composition populates a new cache entry")
+
+            # --- Initiative order
+            print()
+            print("--- initiative order ---")
+            # Make sure the full initial party is loaded for this section.
+            c.post("/api/party", json={"character_ids": initial})
+
+            # Engine-level: parse_dm_line respects Initiative(enabled=True) and @id override.
+            parsed = parse_dm_line("hello", initial, initiative=Initiative(True, list(reversed(initial))))
+            assert parsed.order == list(reversed(initial)), parsed.order
+            parsed = parse_dm_line(f"@{initial[0]} hi", initial, initiative=Initiative(True, initial))
+            assert parsed.order == [initial[0]], parsed.order
+            print("ok  parse_dm_line honours Initiative + @id override")
+
+            # Baseline: seeded from current party, disabled.
+            r = c.get("/api/initiative")
+            assert r.status_code == 200
+            state = r.json()
+            assert state["enabled"] is False, state
+            assert set(state["order"]) == set(initial), state
+            print(f"ok  GET /api/initiative baseline (enabled={state['enabled']}, order={state['order']})")
+
+            # POST valid: reversed order enforced.
+            reversed_party = list(reversed(initial))
+            r = c.post("/api/initiative", json={"enabled": True, "order": reversed_party})
+            assert r.status_code == 200, r.text
+            assert r.json()["order"] == reversed_party and r.json()["enabled"] is True
+            print(f"ok  POST /api/initiative saves {reversed_party} enabled")
+
+            # Validation: unknown id.
+            r = c.post("/api/initiative", json={"enabled": True, "order": initial + ["ghost"]})
+            assert r.status_code == 400 and r.json()["detail"]["error"] == "unknown character(s)"
+            print("ok  unknown id -> 400")
+
+            # Validation: missing a party member.
+            if len(initial) >= 2:
+                r = c.post("/api/initiative", json={"enabled": True, "order": [initial[0]]})
+                assert r.status_code == 400 and r.json()["detail"]["error"].startswith("order must include")
+                print("ok  missing member -> 400")
+
+            # Validation: duplicate.
+            r = c.post("/api/initiative", json={"enabled": True, "order": [initial[0], initial[0]]})
+            assert r.status_code == 400 and r.json()["detail"]["error"] == "duplicate ids in order"
+            print("ok  duplicate id -> 400")
+
+            # Reconcile on party-swap: shrink then expand.
+            if len(initial) >= 2:
+                c.post("/api/party", json={"character_ids": [initial[0]]})
+                after_shrink = c.get("/api/initiative").json()
+                assert after_shrink["order"] == [initial[0]], after_shrink
+                assert after_shrink["enabled"] is True, after_shrink
+                c.post("/api/party", json={"character_ids": initial})
+                after_expand = c.get("/api/initiative").json()
+                assert after_expand["order"][0] == initial[0], after_expand
+                assert set(after_expand["order"]) == set(initial), after_expand
+                print(f"ok  reconcile on party change (shrink={after_shrink['order']}, expand={after_expand['order']})")
         finally:
             # Restore the env default for subsequent runs/suites.
             if initial:

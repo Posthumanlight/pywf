@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from db.characters import CharacterRepository
-from engine.core import build_party
+from engine.core import Initiative, build_party, reconcile_initiative
 
 router = APIRouter()
 
@@ -37,4 +37,9 @@ def set_party(req: PartyRequest, request: Request) -> dict:
         lorebook=app.state.lorebook,
     )
     app.state.ctx = ctx
+    old = app.state.initiative
+    app.state.initiative = Initiative(
+        enabled=old.enabled,
+        order=reconcile_initiative(old.order, ctx.party_ids),
+    )
     return {"party": [{"id": cid, "name": ctx.names[cid]} for cid in ctx.party_ids]}

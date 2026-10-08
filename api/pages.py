@@ -215,12 +215,28 @@ def chat_page() -> str:
  </div>
 </section>
 
-<p id="change-party-wrap" hidden><a href="#" id="change-party">change party</a></p>
+<p id="change-party-wrap" hidden>
+ <a href="#" id="change-party">change party</a>
+ &middot; <a href="#" id="open-initiative">initiative order</a>
+</p>
+
+<section id="initiative" hidden>
+ <h2>Initiative order</h2>
+ <label><input type="checkbox" id="init-enabled"> enforce this order (unchecked = random each round)</label>
+ <ol id="init-list" class="init-list"></ol>
+ <div class="row">
+  <button id="init-save" type="button">Save</button>
+  <button id="init-cancel" type="button">Cancel</button>
+  <span id="init-status"></span>
+ </div>
+</section>
+
 <div id="log"></div>
 <form id="f" hidden>
  <input id="dm" placeholder="DM> type here (prefix @id to target one)" autofocus autocomplete="off">
  <button type="submit">send</button>
 </form>
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.3/Sortable.min.js"></script>
 <style>
  #log { white-space: pre-wrap; min-height: 50vh; border: 1px solid #ddd; padding: 1em; margin: 0; }
  #log .speaker { font-weight: bold; }
@@ -236,6 +252,14 @@ def chat_page() -> str:
  #change-party-wrap a { color: #06c; }
  #log .speaker a, #roster a { color: inherit; text-decoration: underline; text-decoration-style: dotted; }
  #log .speaker a:hover, #roster a:hover { color: #06c; text-decoration-style: solid; }
+ #initiative { border: 1px solid #ddd; padding: 1em; margin: 0 0 1em 0; background: #fafafa; }
+ #initiative h2 { font-size: 1em; margin: 0 0 .5em 0; }
+ .init-list { padding: 0; margin: .5em 0; list-style: none; }
+ .init-list li { display: flex; align-items: center; gap: .5em; padding: .4em .5em; background: #fff; border: 1px solid #ddd; margin-bottom: .3em; border-radius: 4px; }
+ .init-list li .handle { cursor: grab; color: #999; user-select: none; font-weight: bold; }
+ .init-list li.sortable-ghost { opacity: .4; }
+ #init-status.ok { color: #0a0; }
+ #init-status.err { color: #a00; }
 </style>
 <script>
 const log = document.getElementById('log');
@@ -290,6 +314,7 @@ async function renderPicker() {
 function showPicker() {
   document.getElementById('picker').hidden = false;
   document.getElementById('change-party-wrap').hidden = true;
+  document.getElementById('initiative').hidden = true;
   document.getElementById('f').hidden = true;
   renderPicker();
 }
@@ -298,6 +323,33 @@ function hidePicker() {
   document.getElementById('change-party-wrap').hidden = false;
   document.getElementById('f').hidden = false;
   document.getElementById('dm').focus();
+}
+async function loadInitiative() {
+  const [initR, partyR] = await Promise.all([fetch('/api/initiative'), fetch('/party')]);
+  const data = await initR.json();
+  const party = (await partyR.json()).party;
+  const nameOf = Object.fromEntries(party.map(p => [p.id, p.name]));
+  document.getElementById('init-enabled').checked = !!data.enabled;
+  const list = document.getElementById('init-list');
+  list.innerHTML = '';
+  for (const cid of data.order) {
+    const li = document.createElement('li');
+    li.dataset.cid = cid;
+    li.innerHTML = `<span class="handle" aria-hidden="true">☰</span> ${esc(nameOf[cid] || cid)} <span style="color:#888">(@${esc(cid)})</span>`;
+    list.appendChild(li);
+  }
+  if (window.Sortable && !list._sortable) {
+    list._sortable = window.Sortable.create(list, { handle: '.handle', animation: 150 });
+  }
+  const status = document.getElementById('init-status');
+  status.className = ''; status.textContent = '';
+}
+function openInitiative() {
+  document.getElementById('initiative').hidden = false;
+  loadInitiative();
+}
+function closeInitiative() {
+  document.getElementById('initiative').hidden = true;
 }
 document.getElementById('start').addEventListener('click', async () => {
   const err = document.getElementById('picker-error');
@@ -316,6 +368,26 @@ document.getElementById('start').addEventListener('click', async () => {
   } catch (e) { err.textContent = String(e); }
 });
 document.getElementById('change-party').addEventListener('click', (e) => { e.preventDefault(); showPicker(); });
+document.getElementById('open-initiative').addEventListener('click', (e) => { e.preventDefault(); openInitiative(); });
+document.getElementById('init-cancel').addEventListener('click', () => { closeInitiative(); });
+document.getElementById('init-save').addEventListener('click', async () => {
+  const status = document.getElementById('init-status');
+  status.className = ''; status.textContent = 'saving…';
+  const order = Array.from(document.querySelectorAll('#init-list li')).map(li => li.dataset.cid);
+  const enabled = document.getElementById('init-enabled').checked;
+  try {
+    const r = await fetch('/api/initiative', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled, order}),
+    });
+    if (!r.ok) { status.className = 'err'; status.textContent = 'HTTP ' + r.status + ': ' + (await r.text()); return; }
+    status.className = 'ok'; status.textContent = 'saved';
+    setTimeout(closeInitiative, 500);
+  } catch (e) {
+    status.className = 'err'; status.textContent = String(e);
+  }
+});
 document.getElementById('f').addEventListener('submit', async (e) => {
   e.preventDefault();
   const input = document.getElementById('dm');

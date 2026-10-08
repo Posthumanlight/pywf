@@ -12,6 +12,7 @@ from agent.core.agent import MODEL
 from agent.core.cooldown import snapshot as cooldown_snapshot
 from agent.core.models import build_chat_model
 from api.characters import router as characters_router
+from api.initiative import router as initiative_router
 from api.lorebook import router as lorebook_router
 from api.pages import chat_page, landing_page, memory_page
 from api.party import router as party_router
@@ -19,6 +20,7 @@ from api.srd import router as srd_router
 from db.characters import CharacterRepository
 from db.core import DB_PATH
 from engine.core import (
+    Initiative,
     MissingCharactersError,
     PartyContext,
     UnknownTargetError,
@@ -67,6 +69,7 @@ async def lifespan(app: FastAPI):
         except (MissingCharactersError, ValueError):
             # Tolerate a bad / empty env default so the chat picker can bootstrap the party.
             app.state.ctx = PartyContext(agents={}, names={}, party_ids=[], store=store)
+        app.state.initiative = Initiative(enabled=False, order=list(app.state.ctx.party_ids))
         yield
 
 
@@ -75,6 +78,7 @@ app.include_router(characters_router)
 app.include_router(party_router)
 app.include_router(srd_router)
 app.include_router(lorebook_router)
+app.include_router(initiative_router)
 
 
 def _ctx(app: FastAPI) -> PartyContext:
@@ -129,7 +133,7 @@ def chat(req: ChatRequest) -> dict:
     if not req.dm or not req.dm.strip():
         raise HTTPException(status_code=400, detail="empty dm")
     try:
-        parsed = parse_dm_line(req.dm, ctx.party_ids)
+        parsed = parse_dm_line(req.dm, ctx.party_ids, initiative=app.state.initiative)
     except UnknownTargetError as exc:
         raise HTTPException(
             status_code=400,

@@ -35,6 +35,21 @@ class ParsedLine:
     dm_text: str
 
 
+@dataclass
+class Initiative:
+    enabled: bool
+    order: list[str]
+
+
+def reconcile_initiative(saved: list[str], party_ids: Sequence[str]) -> list[str]:
+    """Return the saved order filtered to current party ids, with new ids appended at the end."""
+    party_set = set(party_ids)
+    kept = [cid for cid in saved if cid in party_set]
+    kept_set = set(kept)
+    missing = [cid for cid in party_ids if cid not in kept_set]
+    return kept + missing
+
+
 class UnknownTargetError(Exception):
     def __init__(self, target: str, party_ids: Sequence[str]):
         super().__init__(f"unknown party member: {target!r}; party: {list(party_ids)}")
@@ -103,7 +118,11 @@ def build_party(
     return PartyContext(agents=agents, names=names, party_ids=party_ids, store=store)
 
 
-def parse_dm_line(line: str, party_ids: Sequence[str]) -> ParsedLine:
+def parse_dm_line(
+    line: str,
+    party_ids: Sequence[str],
+    initiative: Initiative | None = None,
+) -> ParsedLine:
     prompt = line.strip()
     if prompt.startswith("@"):
         head, _, body = prompt.partition(" ")
@@ -111,7 +130,10 @@ def parse_dm_line(line: str, party_ids: Sequence[str]) -> ParsedLine:
         if target not in party_ids:
             raise UnknownTargetError(target, party_ids)
         return ParsedLine(order=[target], dm_text=body.strip())
-    order = random.sample(list(party_ids), len(party_ids))
+    if initiative is not None and initiative.enabled and initiative.order:
+        order = reconcile_initiative(initiative.order, party_ids)
+    else:
+        order = random.sample(list(party_ids), len(party_ids))
     return ParsedLine(order=order, dm_text=prompt)
 
 
