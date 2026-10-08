@@ -178,8 +178,19 @@ def memory_page(stats: list[dict[str, Any]]) -> str:
 def chat_page() -> str:
     body = """<p class="back"><a href="/">← Back to home</a></p>
 <h1>Chat <span id="roster"></span></h1>
+
+<section id="picker">
+ <h2>Choose party</h2>
+ <div id="roster-choices"><em>loading…</em></div>
+ <div class="row">
+  <button id="start" type="button">Start session</button>
+  <span id="picker-error" class="err"></span>
+ </div>
+</section>
+
+<p id="change-party-wrap" hidden><a href="#" id="change-party">change party</a></p>
 <div id="log"></div>
-<form id="f">
+<form id="f" hidden>
  <input id="dm" placeholder="DM> type here (prefix @id to target one)" autofocus autocomplete="off">
  <button type="submit">send</button>
 </form>
@@ -190,24 +201,94 @@ def chat_page() -> str:
  form { display: flex; gap: .5em; margin-top: 1em; }
  #dm { flex: 1; padding: .5em; font: inherit; }
  #roster { color: #666; font-weight: normal; }
+ #picker { border: 1px solid #ddd; padding: 1em; margin: 0 0 1em 0; background: #fafafa; }
+ #picker h2 { font-size: 1em; margin: 0 0 .5em 0; }
+ #roster-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: .3em .8em; margin-bottom: .5em; }
+ #roster-choices label { display: flex; align-items: center; gap: .4em; cursor: pointer; }
+ #picker-error { color: #a00; }
+ #change-party-wrap a { color: #06c; }
+ #log .speaker a, #roster a { color: inherit; text-decoration: underline; text-decoration-style: dotted; }
+ #log .speaker a:hover, #roster a:hover { color: #06c; text-decoration-style: solid; }
 </style>
 <script>
 const log = document.getElementById('log');
 const esc = s => s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-function append(speaker, text, cls) {
+function append(speaker, text, cls, href) {
   const div = document.createElement('div');
-  div.innerHTML = `<span class="speaker ${cls||''}">${esc(speaker)}&gt;</span> <span class="${cls||''}">${esc(text)}</span>`;
+  const speakerHtml = href
+    ? `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(speaker)}</a>`
+    : esc(speaker);
+  div.innerHTML = `<span class="speaker ${cls||''}">${speakerHtml}&gt;</span> <span class="${cls||''}">${esc(text)}</span>`;
   log.appendChild(div);
   window.scrollTo(0, document.body.scrollHeight);
 }
-async function loadParty() {
+async function updateRosterLine() {
   try {
     const r = await fetch('/party');
     const data = await r.json();
-    document.getElementById('roster').textContent =
-      '— party: ' + data.party.map(p => `${p.name} (@${p.id})`).join(', ');
-  } catch (e) { append('error', 'failed to load /party: ' + e, 'err'); }
+    const roster = document.getElementById('roster');
+    if (!data.party.length) { roster.textContent = ''; return; }
+    const parts = data.party.map(p =>
+      `<a href="/characters/${encodeURIComponent(p.id)}/edit" target="_blank" rel="noopener">${esc(p.name)}</a> (@${esc(p.id)})`
+    );
+    roster.innerHTML = '— party: ' + parts.join(', ');
+  } catch (e) {}
 }
+async function renderPicker() {
+  const choices = document.getElementById('roster-choices');
+  const err = document.getElementById('picker-error');
+  err.textContent = '';
+  choices.innerHTML = '<em>loading…</em>';
+  try {
+    const [allR, curR] = await Promise.all([fetch('/api/characters'), fetch('/party')]);
+    const all = (await allR.json()).items || [];
+    const current = new Set(((await curR.json()).party || []).map(p => p.id));
+    if (!all.length) {
+      choices.innerHTML = '<em>No characters in the database. <a href="/characters/new">Create one first</a>.</em>';
+      document.getElementById('start').disabled = true;
+      return;
+    }
+    document.getElementById('start').disabled = false;
+    choices.innerHTML = '';
+    for (const it of all) {
+      const id = `pick-${it.id}`;
+      const row = document.createElement('label');
+      row.innerHTML = `<input type="checkbox" value="${esc(it.id)}" id="${esc(id)}" ${current.has(it.id) ? 'checked' : ''}> ${esc(it.name)} <span style="color:#888">(@${esc(it.id)})</span>`;
+      choices.appendChild(row);
+    }
+  } catch (e) {
+    err.textContent = 'failed to load characters: ' + e;
+  }
+}
+function showPicker() {
+  document.getElementById('picker').hidden = false;
+  document.getElementById('change-party-wrap').hidden = true;
+  document.getElementById('f').hidden = true;
+  renderPicker();
+}
+function hidePicker() {
+  document.getElementById('picker').hidden = true;
+  document.getElementById('change-party-wrap').hidden = false;
+  document.getElementById('f').hidden = false;
+  document.getElementById('dm').focus();
+}
+document.getElementById('start').addEventListener('click', async () => {
+  const err = document.getElementById('picker-error');
+  err.textContent = '';
+  const ids = Array.from(document.querySelectorAll('#roster-choices input[type=checkbox]:checked')).map(cb => cb.value);
+  if (!ids.length) { err.textContent = 'pick at least one character'; return; }
+  try {
+    const r = await fetch('/api/party', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({character_ids: ids}),
+    });
+    if (!r.ok) { err.textContent = 'HTTP ' + r.status + ': ' + (await r.text()); return; }
+    await updateRosterLine();
+    hidePicker();
+  } catch (e) { err.textContent = String(e); }
+});
+document.getElementById('change-party').addEventListener('click', (e) => { e.preventDefault(); showPicker(); });
 document.getElementById('f').addEventListener('submit', async (e) => {
   e.preventDefault();
   const input = document.getElementById('dm');
@@ -227,10 +308,11 @@ document.getElementById('f').addEventListener('submit', async (e) => {
       return;
     }
     const data = await r.json();
-    for (const t of data.turns) append(t.name, t.text);
+    for (const t of data.turns) append(t.name, t.text, null, '/characters/' + encodeURIComponent(t.character_id) + '/edit');
   } catch (err) { append('error', String(err), 'err'); }
 });
-loadParty();
+updateRosterLine();
+renderPicker();
 </script>
 """
     return _layout(body)

@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     gemini_api_key: str
     character_ids: str
     model_fallbacks: str = ""
+    model_timeout_s: int = 30
     interface: Literal["cli", "api"] = "cli"
     api_host: str = "127.0.0.1"
     api_port: int = 8000

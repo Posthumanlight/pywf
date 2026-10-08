@@ -1,5 +1,6 @@
 """Shared party-execution engine used by both the CLI and the FastAPI frontend."""
 import json
+import logging
 import random
 from dataclasses import dataclass
 from typing import Any, Sequence, TypedDict
@@ -10,6 +11,8 @@ from agent.core.agent import build_player_agent
 from agent.core.memory import memory_stats
 from db.characters import CharacterRepository
 from settings.settings import settings
+
+logger = logging.getLogger("pywf.engine")
 
 
 class Turn(TypedDict):
@@ -46,10 +49,20 @@ class MissingCharactersError(Exception):
         self.available = list(available)
 
 
-def build_party(saver, store=None) -> PartyContext:
-    party_ids = list(settings.party)
+def build_party(
+    saver,
+    store=None,
+    party_ids=None,
+    *,
+    chat_model=None,
+    memory_model=None,
+    fallback_models=None,
+    agent_cache: dict | None = None,
+    lorebook=None,
+) -> PartyContext:
+    party_ids = list(party_ids) if party_ids is not None else list(settings.party)
     if not party_ids:
-        raise ValueError("No character_ids configured. Set character_ids=<id1>,<id2>,... in .env")
+        raise ValueError("No character_ids configured. Set character_ids=<id1>,<id2>,... in .env, or pick a party at /chat.")
 
     repo = CharacterRepository()
     available = set(repo.list_ids())
@@ -64,17 +77,28 @@ def build_party(saver, store=None) -> PartyContext:
         sheet = json.loads(raw)
         names[cid] = sheet.get("name") or cid
 
-    fallbacks = list(settings.fallbacks)
+    fallbacks_str = list(settings.fallbacks)
     agents: dict[str, Any] = {}
     for cid in party_ids:
         peers = [names[other] for other in party_ids if other != cid]
-        agents[cid] = build_player_agent(
+        cache_key = (cid, frozenset(peers))
+        if agent_cache is not None and cache_key in agent_cache:
+            agents[cid] = agent_cache[cache_key]
+            continue
+        agent = build_player_agent(
             cid,
             party_member_names=peers,
             checkpointer=saver,
-            model_fallbacks=fallbacks,
+            model_fallbacks=fallbacks_str,
             store=store,
+            chat_model=chat_model,
+            memory_model=memory_model,
+            fallback_models=fallback_models,
+            lorebook=lorebook,
         )
+        agents[cid] = agent
+        if agent_cache is not None:
+            agent_cache[cache_key] = agent
 
     return PartyContext(agents=agents, names=names, party_ids=party_ids, store=store)
 
@@ -127,11 +151,20 @@ def run_round(ctx: PartyContext, dm_text: str, order: list[str]) -> list[Turn]:
     for cid in order:
         agent_input = _assemble_turn_input(dm_text, prior, speaker_name=ctx.names[cid])
         config: RunnableConfig = {"configurable": {"thread_id": cid}}
-        result = ctx.agents[cid].invoke(
-            {"messages": [{"role": "user", "content": agent_input}]},
-            config=config,
-        )
-        reply = _render_response(result)
+        try:
+            result = ctx.agents[cid].invoke(
+                {"messages": [{"role": "user", "content": agent_input}]},
+                config=config,
+            )
+            reply = _render_response(result)
+        except Exception as exc:
+            logger.exception("run_round: %s invoke failed; stopping round", cid)
+            turns.append(Turn(
+                character_id=cid,
+                name=ctx.names[cid],
+                text=f"[error: {type(exc).__name__}: {exc}]",
+            ))
+            break
         turns.append(Turn(character_id=cid, name=ctx.names[cid], text=reply))
         prior.append((ctx.names[cid], reply))
     return turns
